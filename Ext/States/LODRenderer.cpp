@@ -11,9 +11,9 @@
 
 #include "../../Core/FrameContext.h"
 #include "../../Core/Nodes/GeometryNode.h"
-#include "../../../Rendering/RenderingContext/RenderingContext.h"
-#include "../../../Rendering/Mesh/Mesh.h"
-#include "../../../Geometry/Rect.h"
+#include <Rendering/RenderingContext/RenderingContext.h>
+#include <Rendering/Mesh/Mesh.h>
+#include <Geometry/Rect.h>
 #include "../../Helper/StdNodeVisitors.h"
 
 #include <Util/StringIdentifier.h>
