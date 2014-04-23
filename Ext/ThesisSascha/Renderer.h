@@ -8,8 +8,8 @@
 */
 
 #ifdef MINSG_EXT_THESISSASCHA
-#ifndef RENDERER_H_
-#define RENDERER_H_
+#ifndef MINSG_THESISSASCHA_RENDERER_H_
+#define MINSG_THESISSASCHA_RENDERER_H_
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -23,5 +23,5 @@ public:
 } /* namespace ThesisSascha */
 } /* namespace MinSG */
 
-#endif /* RENDERER_H_ */
+#endif /* MINSG_THESISSASCHA_RENDERER_H_ */
 #endif /* MINSG_EXT_THESISSASCHA */
