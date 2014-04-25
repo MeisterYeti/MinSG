@@ -182,12 +182,12 @@ std::pair<Util::Reference<Rendering::Mesh>,float> Preprocessor::createSurfelsFor
 	);
 }
 
-void attachSurfel(Node* node, const std::pair<Util::Reference<Rendering::Mesh>,float>& surfelInfo) {
+void attachSurfel(Node* node, const std::pair<Util::Reference<Mesh>,float>& surfelInfo) {
 	static const StringIdentifier SURFELS("surfels");
 	static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 	if(node->isInstance())
 		node = node->getPrototype();
-	node->setAttribute(SURFELS, new ReferenceAttribute<Node>(surfelInfo.first));
+	node->setAttribute(SURFELS, new ReferenceAttribute<Mesh>(surfelInfo.first.get()));
 	node->setAttribute(SURFEL_REL_COVERING, GenericAttribute::createNumber(surfelInfo.second));
 }
 
