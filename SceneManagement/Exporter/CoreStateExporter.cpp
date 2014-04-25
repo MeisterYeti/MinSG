@@ -151,31 +151,39 @@ static void describeShaderState(ExporterContext &,NodeDescription & desc,State *
 	desc.setString(Consts::ATTR_NODE_TYPE, Consts::STATE_TYPE_SHADER);
 	auto shaderState = dynamic_cast<ShaderState *>(state);
 
-	// add shader usage type
-	const bool usesGL = shaderState->getShader() ? shaderState->getShader()->usesClassicOpenGL() : true;
-	desc.setString(Consts::ATTR_SHADER_USES_CLASSIC_GL , usesGL ? "true" : "false");
-
-	const bool usesUniforms = shaderState->getShader() ? shaderState->getShader()->usesSGUniforms() : true;
-	desc.setString(Consts::ATTR_SHADER_USES_SG_UNIFORMS , usesUniforms ? "true" : "false");
-
 	for(const auto & uniformEntry : shaderState->getUniforms())
 		ExporterTools::addDataEntry(desc,std::move(createDescriptionForUniform(uniformEntry.second)));
 
-	// The shader's files are stored as attributes:  { Consts::STATE_ATTR_SHADER_FILES : [ fileDescriptor* ] } 
-	Util::GenericAttributeList * shaderFilesAttribute = dynamic_cast<Util::GenericAttributeList *>(state->getAttribute(Consts::STATE_ATTR_SHADER_FILES));
-	if(shaderFilesAttribute){
-		for(const auto & a : *shaderFilesAttribute){
-			const auto a2 = dynamic_cast<const NodeDescription*>(a.get());
-			if(a2){
-				std::unique_ptr<NodeDescription> fileDescription(a2->clone());
-				ExporterTools::addDataEntry(desc,std::move(*fileDescription));
+	// The shader is either described by a shader name OR by the list of files and properties
+	Util::GenericAttribute* shaderNameAttr = state->getAttribute(Consts::STATE_ATTR_SHADER_NAME);
+	if(shaderNameAttr&&!shaderNameAttr->toString().empty()){
+		desc.setString(Consts::ATTR_SHADER_NAME, shaderNameAttr->toString());
+	}else{
+		// add shader usage type
+		const bool usesGL = shaderState->getShader() ? shaderState->getShader()->usesClassicOpenGL() : true;
+		desc.setString(Consts::ATTR_SHADER_USES_CLASSIC_GL , usesGL ? "true" : "false");
+
+		const bool usesUniforms = shaderState->getShader() ? shaderState->getShader()->usesSGUniforms() : true;
+		desc.setString(Consts::ATTR_SHADER_USES_SG_UNIFORMS , usesUniforms ? "true" : "false");
+
+		// The shader's files are stored as attributes:  { Consts::STATE_ATTR_SHADER_FILES : [ fileDescriptor* ] } 
+		Util::GenericAttributeList * shaderFilesAttribute = dynamic_cast<Util::GenericAttributeList *>(state->getAttribute(Consts::STATE_ATTR_SHADER_FILES));
+		if(shaderFilesAttribute){
+			for(const auto & a : *shaderFilesAttribute){
+				const auto a2 = dynamic_cast<const NodeDescription*>(a.get());
+				if(a2){
+					std::unique_ptr<NodeDescription> fileDescription(a2->clone());
+					ExporterTools::addDataEntry(desc,std::move(*fileDescription));
+				}
 			}
 		}
+
 	}
+	
 
 }
 
-static void describeTextureState(ExporterContext & ctxt,NodeDescription & desc,State * state) {
+static void describeTextureState(ExporterContext & /*ctxt*/,NodeDescription & desc,State * state) {
 	auto ts = dynamic_cast<TextureState *>(state);
 	
 	desc.setString(Consts::ATTR_STATE_TYPE,Consts::STATE_TYPE_TEXTURE);
@@ -202,12 +210,13 @@ static void describeTextureState(ExporterContext & ctxt,NodeDescription & desc,S
 				ExporterTools::addDataEntry(desc, std::move(dataDesc));
 			}
 		} else {
-			// make path to texture relative to scene (if mesh lies below the scene)
-			Util::FileUtils::makeRelativeIfPossible(ctxt.sceneFile, texFilename);
+//			// make path to texture relative to scene (if mesh lies below the scene)
+//			Util::FileUtils::makeRelativeIfPossible(ctxt.sceneFile, texFilename);
+			
 
 			NodeDescription dataDesc;
 			dataDesc.setString(Consts::ATTR_DATA_TYPE,"image");
-			dataDesc.setString(Consts::ATTR_TEXTURE_FILENAME, texFilename.toString());
+			dataDesc.setString(Consts::ATTR_TEXTURE_FILENAME, texFilename.toShortString());
 			ExporterTools::addDataEntry(desc, std::move(dataDesc));
 
 		}
