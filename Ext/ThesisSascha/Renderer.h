@@ -11,10 +11,14 @@
 #ifndef MINSG_THESISSASCHA_RENDERER_H_
 #define MINSG_THESISSASCHA_RENDERER_H_
 
+#include <Util/ReferenceCounter.h>
+#include <Util/TypeNameMacro.h>
+
 namespace MinSG {
 namespace ThesisSascha {
 
-class Renderer {
+class Renderer : public Util::ReferenceCounter<Renderer> {
+	PROVIDES_TYPE_NAME(Renderer)
 public:
 	Renderer();
 	virtual ~Renderer();
