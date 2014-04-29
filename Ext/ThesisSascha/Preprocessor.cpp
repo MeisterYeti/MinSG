@@ -10,6 +10,7 @@
 #ifdef MINSG_EXT_THESISSASCHA
 
 #include "Preprocessor.h"
+#include "SurfelManager.h"
 
 #include <Geometry/Frustum.h>
 #include <Geometry/Tools.h>
@@ -29,7 +30,7 @@
 #include <MinSG/Core/RenderParam.h>
 #include <MinSG/Core/Nodes/Node.h>
 #include <MinSG/Core/Nodes/CameraNodeOrtho.h>
-#include <MinSG/Helper/StdNodeVisitors.h>
+//#include <MinSG/Helper/StdNodeVisitors.h>
 #include <MinSG/Ext/BlueSurfels/SurfelGenerator.h>
 
 #include <Util/Graphics/PixelAccessor.h>
@@ -48,6 +49,30 @@ namespace ThesisSascha {
 
 using namespace Rendering;
 using namespace Util;
+
+
+void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (Node *)>& enterFun, const std::function<void (Node *)>& leaveFun) {
+	if(root == nullptr) {
+		return;
+	}
+	struct Visitor : public NodeVisitor {
+		const std::function<void (Node *)>& m_enter;
+		const std::function<void (Node *)>& m_leave;
+		Visitor(const std::function<NodeVisitor::status (Node *)>& p_enter, const std::function<void (Node *)>& p_leave) : m_enter(p_enter), m_leave(p_leave) {
+		}
+		virtual ~Visitor() = default;
+
+		NodeVisitor::status enter(Node * node) override {
+			return m_enter(node);
+		}
+
+		NodeVisitor::status leave(Node * node) override {
+			m_leave(node);
+			return CONTINUE_TRAVERSAL;
+		}
+	} visitor(leaveFun);
+	root->traverse(visitor);
+}
 
 Geometry::Vec3 Preprocessor::directions[8] = {
 	Geometry::Vec3(1,1,1),
@@ -75,7 +100,7 @@ void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worl
 	}
 }
 
-Preprocessor::Preprocessor() : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()) {
+Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager) {
 	// do nothing
 }
 
@@ -83,9 +108,9 @@ Preprocessor::~Preprocessor() {
 	delete surfelGenerator;
 }
 
-std::pair<Util::Reference<Rendering::Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext& frameContext, Node* node) {
+std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext& frameContext, Node* node) {
 
-	Rendering::RenderingContext& rc = frameContext.getRenderingContext();
+	RenderingContext& rc = frameContext.getRenderingContext();
 
 	// initialize cameras for each direction
 	Geometry::Vec2i resolution;
@@ -182,20 +207,13 @@ std::pair<Util::Reference<Rendering::Mesh>,float> Preprocessor::createSurfelsFor
 	);
 }
 
-void attachSurfel(Node* node, const std::pair<Util::Reference<Mesh>,float>& surfelInfo) {
-	static const StringIdentifier SURFELS("surfels");
-	static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
-	if(node->isInstance())
-		node = node->getPrototype();
-	node->setAttribute(SURFELS, new ReferenceAttribute<Mesh>(surfelInfo.first.get()));
-	node->setAttribute(SURFEL_REL_COVERING, GenericAttribute::createNumber(surfelInfo.second));
-}
-
 void Preprocessor::visitNode(FrameContext& frameContext, Node* node) {
-	std::pair<Util::Reference<Rendering::Mesh>,float> surfelInfo = createSurfelsForNode(frameContext, node);
+	std::pair<Reference<Mesh>,float> surfelInfo = createSurfelsForNode(frameContext, node);
+	//TODO: use node complexity threshold
+	manager->storeSurfel(node, surfelInfo);
 }
 
-void Preprocessor::initialize(const FileName& helperShader, const FileName& positionShader, const FileName& normalShader, const FileName& colorShader, const FileName& sizeShader) {
+void Preprocessor::initShaders(const FileName& helperShader, const FileName& positionShader, const FileName& normalShader, const FileName& colorShader, const FileName& sizeShader) {
 	cameras.clear();
 	shaders.clear();
 
@@ -237,7 +255,7 @@ void Preprocessor::initialize(const FileName& helperShader, const FileName& posi
 using std::placeholders::_1;
 void Preprocessor::process(FrameContext& frameContext, Node* root) {
 	std::function<void(Node*)> visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1);
-	forEachNodeBottomUp(root, visit);
+	forEachNodeBottomUp(root, checkProcessing, visit);
 }
 
 } /* namespace ThesisSascha */
