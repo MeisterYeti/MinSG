@@ -56,7 +56,7 @@ void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (N
 		return;
 	}
 	struct Visitor : public NodeVisitor {
-		const std::function<void (Node *)>& m_enter;
+		const std::function<NodeVisitor::status (Node *)>& m_enter;
 		const std::function<void (Node *)>& m_leave;
 		Visitor(const std::function<NodeVisitor::status (Node *)>& p_enter, const std::function<void (Node *)>& p_leave) : m_enter(p_enter), m_leave(p_leave) {
 		}
@@ -70,7 +70,7 @@ void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (N
 			m_leave(node);
 			return CONTINUE_TRAVERSAL;
 		}
-	} visitor(leaveFun);
+	} visitor(enterFun, leaveFun);
 	root->traverse(visitor);
 }
 
