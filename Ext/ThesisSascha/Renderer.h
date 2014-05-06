@@ -12,6 +12,8 @@
 #define MINSG_THESISSASCHA_RENDERER_H_
 
 #include <MinSG/Core/States/NodeRendererState.h>
+#include <MinSG/Core/FrameContext.h>
+
 #include <Util/References.h>
 #include <Util/ReferenceCounter.h>
 #include <Util/TypeNameMacro.h>
@@ -23,10 +25,12 @@ class SurfelManager;
 class Renderer : public NodeRendererState {
 	PROVIDES_TYPE_NAME(Renderer)
 public:
-	Renderer(SurfelManager* manager);
+	Renderer(SurfelManager* manager, Util::StringIdentifier channel = FrameContext::DEFAULT_CHANNEL);
 	virtual ~Renderer();
 
 	virtual NodeRendererResult displayNode(FrameContext & context, Node * node, const RenderParam & rp);
+
+	virtual State * clone() const;
 private:
 
 	Util::Reference<SurfelManager> manager;
