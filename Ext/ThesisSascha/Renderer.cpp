@@ -11,7 +11,6 @@
 #include "Renderer.h"
 #include "SurfelManager.h"
 
-#include <MinSG/Core/FrameContext.h>
 #include <MinSG/Core/Nodes/Node.h>
 #include <MinSG/Core/RenderParam.h>
 
@@ -35,7 +34,7 @@ static const StringIdentifier SURFEL_ID("surfelId");
 static const StringIdentifier SURFELS("surfels");
 static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 
-Renderer::Renderer(SurfelManager* manager) : manager(manager), NodeRendererState(FrameContext::DEFAULT_CHANNEL) {
+Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel) {
 	// TODO Auto-generated constructor stub
 
 }
@@ -87,6 +86,10 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	}
 
 	return NodeRendererResult::PASS_ON;
+}
+
+State* Renderer::clone() const {
+	return new Renderer(manager.get(), this->getSourceChannel());
 }
 
 } /* namespace ThesisSascha */
