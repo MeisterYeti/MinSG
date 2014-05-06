@@ -55,6 +55,8 @@ public:
 		this->checkProcessing = checkProcessing;
 	}
 	void process(FrameContext& frameContext, Node* root);
+
+	void updateSurfels(Node* node, const std::function<bool(Node*)>& abortFn);
 private:
 	std::pair<Util::Reference<Rendering::Mesh>,float> createSurfelsForNode(FrameContext& frameContext, Node* node);
 	void visitNode(FrameContext& frameContext, Node* node);
