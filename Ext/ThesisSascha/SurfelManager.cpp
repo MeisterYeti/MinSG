@@ -58,7 +58,14 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 	Serialization::saveMesh(surfelInfo.first.get(), surfelFile);
 }
 
+bool SurfelManager::loadSurfel(Node* node) {
+}
+
+void SurfelManager::disposeSurfel(Node* node) {
+}
+
 } /* namespace ThesisSascha */
 } /* namespace MinSG */
+
 
 #endif /* MINSG_EXT_THESISSASCHA */

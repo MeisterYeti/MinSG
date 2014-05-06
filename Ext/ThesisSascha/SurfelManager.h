@@ -35,6 +35,9 @@ public:
 
 	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo);
 	void attachSurfel(Node* node, const SurfelInfo_t& surfelInfo);
+
+	bool loadSurfel(Node* node);
+	void disposeSurfel(Node* node);
 private:
 	Util::FileName basePath;
 };
