@@ -258,6 +258,10 @@ void Preprocessor::process(FrameContext& frameContext, Node* root) {
 	forEachNodeBottomUp(root, checkProcessing, visit);
 }
 
+void Preprocessor::updateSurfels(Node* node, const std::function<bool(Node*)>& abortFn) {
+
+}
+
 } /* namespace ThesisSascha */
 } /* namespace MinSG */
 

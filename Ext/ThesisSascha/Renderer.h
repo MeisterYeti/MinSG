@@ -11,17 +11,25 @@
 #ifndef MINSG_THESISSASCHA_RENDERER_H_
 #define MINSG_THESISSASCHA_RENDERER_H_
 
+#include <MinSG/Core/States/NodeRendererState.h>
+#include <Util/References.h>
 #include <Util/ReferenceCounter.h>
 #include <Util/TypeNameMacro.h>
 
 namespace MinSG {
 namespace ThesisSascha {
+class SurfelManager;
 
-class Renderer : public Util::ReferenceCounter<Renderer> {
+class Renderer : public NodeRendererState {
 	PROVIDES_TYPE_NAME(Renderer)
 public:
-	Renderer();
+	Renderer(SurfelManager* manager);
 	virtual ~Renderer();
+
+	virtual NodeRendererResult displayNode(FrameContext & context, Node * node, const RenderParam & rp);
+private:
+
+	Util::Reference<SurfelManager> manager;
 };
 
 } /* namespace ThesisSascha */
