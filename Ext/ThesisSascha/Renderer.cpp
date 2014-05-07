@@ -30,8 +30,6 @@ namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
 
-static const StringIdentifier SURFEL_ID("surfelId");
-static const StringIdentifier SURFELS("surfels");
 static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 
 Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel) {
@@ -56,16 +54,17 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	//   else
 	//     draw surfels
 
-	float tStart = 200; //TODO: calculate by customizable function
+	/*float tStart = 200; //TODO: calculate by customizable function
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = size*size;
 	if(qSize > tStart)
 		return NodeRendererResult::PASS_ON;
 	float tEnd = 300; //TODO: calculate by customizable function
+	*/
 
 	if(manager->loadSurfel(node)) {
-		Mesh* mesh = node->findAttribute(SURFELS)->toType<ReferenceAttribute<Mesh>>()->get();
+		Mesh* mesh = manager->getSurfel(node);
 		uint32_t maxCount = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
@@ -82,10 +81,11 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		rc.popMatrix();
 		rc.popPointParameters();
 
-		return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
+		return NodeRendererResult::NODE_HANDLED;
+		//return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
 	}
 
-	return NodeRendererResult::PASS_ON;
+	return NodeRendererResult::NODE_HANDLED;
 }
 
 State* Renderer::clone() const {
