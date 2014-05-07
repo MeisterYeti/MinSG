@@ -100,7 +100,12 @@ void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worl
 	}
 }
 
+NodeVisitor::status pass(Node * node) {
+	return NodeVisitor::CONTINUE_TRAVERSAL;
+}
+
 Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager) {
+	checkProcessing = pass;
 	// do nothing
 }
 
