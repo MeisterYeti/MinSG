@@ -14,8 +14,10 @@
 #include <Util/ReferenceCounter.h>
 #include <Util/IO/FileName.h>
 #include <Util/TypeNameMacro.h>
+#include <Util/StringIdentifier.h>
 
 #include <vector>
+#include <unordered_map>
 
 namespace Rendering {
 class Mesh;
@@ -25,6 +27,8 @@ namespace MinSG {
 class Node;
 
 namespace ThesisSascha {
+
+class WorkerThread;
 
 class SurfelManager : public Util::ReferenceCounter<SurfelManager> {
 	PROVIDES_TYPE_NAME(SurfelManager)
@@ -37,9 +41,14 @@ public:
 	void attachSurfel(Node* node, const SurfelInfo_t& surfelInfo);
 
 	bool loadSurfel(Node* node);
+	Rendering::Mesh* getSurfel(Node* node);
 	void disposeSurfel(Node* node);
+
+	void update();
 private:
 	Util::FileName basePath;
+	WorkerThread* worker;
+	std::unordered_map<Util::StringIdentifier, Util::Reference<Rendering::Mesh>> surfels;
 };
 
 } /* namespace ThesisSascha */
