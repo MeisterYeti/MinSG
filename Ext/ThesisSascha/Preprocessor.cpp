@@ -26,6 +26,7 @@
 #include <Rendering/RenderingContext/RenderingContext.h>
 #include <Rendering/RenderingContext/RenderingParameters.h>
 #include <Rendering/Mesh/Mesh.h>
+#include <Rendering/Serialization/Serialization.h>
 
 #include <MinSG/Core/RenderParam.h>
 #include <MinSG/Core/Nodes/Node.h>
@@ -35,7 +36,9 @@
 
 #include <Util/Graphics/PixelAccessor.h>
 #include <Util/GenericAttribute.h>
+#include <Util/Timer.h>
 
+#include <string>
 #include <functional>
 #include <algorithm>
 
@@ -75,23 +78,24 @@ void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (N
 }
 
 Geometry::Vec3 Preprocessor::directions[8] = {
-	Geometry::Vec3(1,1,1),
-	Geometry::Vec3(1,1,-1),
-	Geometry::Vec3(1,-1,1),
-	Geometry::Vec3(1,-1,-1),
-	Geometry::Vec3(-1,1,1),
-	Geometry::Vec3(-1,1,-1),
-	Geometry::Vec3(-1,-1,1),
-	Geometry::Vec3(-1,-1,-1),
+	Geometry::Vec3(1,1,1).normalize(),
+	Geometry::Vec3(1,1,-1).normalize(),
+	Geometry::Vec3(1,-1,1).normalize(),
+	Geometry::Vec3(1,-1,-1).normalize(),
+	Geometry::Vec3(-1,1,1).normalize(),
+	Geometry::Vec3(-1,1,-1).normalize(),
+	Geometry::Vec3(-1,-1,1).normalize(),
+	Geometry::Vec3(-1,-1,-1).normalize(),
 };
 
 void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worldDir, Node* node) {
 	Geometry::Vec3 nodeCenter = node->getWorldBB().getCenter();
+
 	camera->setWorldPosition(nodeCenter - worldDir * node->getWorldBB().getExtentMax());
 	camera->rotateToWorldDir(camera->getWorldPosition() - nodeCenter);
 
 	Geometry::Frustum frustum = Geometry::calcEnclosingOrthoFrustum(node->getBB(), camera->getWorldMatrix().inverse() * node->getWorldMatrix());
-	camera->setNearFar(frustum.getNear()*0.99, frustum.getFar()*1.01);
+	camera->setNearFar(frustum.getNear()*0.99f, frustum.getFar()*1.01f);
 	if( frustum.getRight()-frustum.getLeft() > frustum.getTop() - frustum.getBottom()) {
 		camera->rotateLocal_deg(90, Geometry::Vec3(0,0,1));
 		camera->setClippingPlanes(frustum.getBottom(), frustum.getTop(), frustum.getLeft(), frustum.getRight());
@@ -106,6 +110,7 @@ NodeVisitor::status pass(Node * node) {
 
 Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager) {
 	checkProcessing = pass;
+	surfelGenerator->setReusalRate(0.9);
 	// do nothing
 }
 
@@ -116,12 +121,14 @@ Preprocessor::~Preprocessor() {
 std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext& frameContext, Node* node) {
 
 	RenderingContext& rc = frameContext.getRenderingContext();
+	static Util::Timer timer;
+	timer.reset();
 
 	// initialize cameras for each direction
 	Geometry::Vec2i resolution;
 	{
-		float maxWidth;
-		float maxHeight;
+		float maxWidth = 0;
+		float maxHeight = 0;
 		auto it = cameras.begin();
 		for(auto dir : Preprocessor::directions) {
 			CameraNodeOrtho* camera = (*it).get();
@@ -139,7 +146,10 @@ std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext
 			x = viewport.getMaxX()+1;
 		}
 		resolution = Geometry::Vec2( std::round(x-5)+8+2, verticalResolution);
+		std::cout << "Res: " << resolution << " ";
 	}
+	std::cout << "init: " << timer.getMilliseconds() << " ";
+	timer.reset();
 
 	// render textures
 	std::vector<Reference<Texture> > textures;
@@ -172,7 +182,7 @@ std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext
 //				rc.setImmediateMode(false);
 //				rc.applyChanges(true);
 				frameContext.setCamera(camera.get());
-//				renderingContext.clearScreen(clearColor);
+//				rc.clearScreen(clearColor);
 				frameContext.displayNode(node, rp);
 //				rc.setImmediateMode(true);
 			}
@@ -181,6 +191,15 @@ std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext
 			rc.popShader();
 			rc.popFBO();
 			fbo->detachColorTexture(rc, 0);
+
+			/*rc.pushAndSetScissor(ScissorParameters(screenRect));
+			rc.pushViewport();
+			rc.setViewport(screenRect);
+			TextureUtils::drawTextureToScreen(rc, screenRect, colorT, Geometry::Rect(0,0,1,1));
+			FileName file("test" + std::to_string(pass) + ".png");
+			Serialization::saveTexture(rc, TextureUtils::createTextureFromScreen(), file);
+			rc.popViewport();
+			rc.popScissor();*/
 
 			textures.push_back(colorT);
 		}
@@ -202,14 +221,19 @@ std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext
 		rc.popShader();
 		rc.popFBO();
 		fbo->detachColorTexture(rc, 0);
+		//FileName file("test.png");
+		//Serialization::saveTexture(rc, textures[SIZE].get(), file);
 	}
-
-	return surfelGenerator->createSurfels(
+	std::cout << "render: " << timer.getMilliseconds() << " ";
+	timer.reset();
+	std::pair<Util::Reference<Rendering::Mesh>,float> surfels = surfelGenerator->createSurfels(
 		*TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get()).get(),
 		*TextureUtils::createColorPixelAccessor(rc, textures[NORMAL].get()).get(),
 		*TextureUtils::createColorPixelAccessor(rc, textures[COLOR].get()).get(),
 		*TextureUtils::createColorPixelAccessor(rc, textures[SIZE].get()).get()
 	);
+	std::cout << "gen: " << timer.getMilliseconds() << std::endl;
+	return surfels;
 }
 
 void Preprocessor::visitNode(FrameContext& frameContext, Node* node) {
