@@ -54,11 +54,11 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	//   else
 	//     draw surfels
 
-	/*float tStart = 200; //TODO: calculate by customizable function
+	float tStart = 200; //TODO: calculate by customizable function
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = size*size;
-	if(qSize > tStart)
+	/*if(qSize > tStart)
 		return NodeRendererResult::PASS_ON;
 	float tEnd = 300; //TODO: calculate by customizable function
 	*/
@@ -70,7 +70,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
 		uint32_t count = maxCount; //TODO: calculate
-		float pSize = 1.0f; //TODO: calculate
+		float pSize = (relCovering*size*4)/count; //TODO: calculate
 
 		RenderingContext& rc = context.getRenderingContext();
 		rc.pushAndSetPointParameters(PointParameters(pSize, false));
