@@ -10,6 +10,8 @@
 #ifndef SURFELMANAGER_H_
 #define SURFELMANAGER_H_
 
+#include <MinSG/Core/FrameContext.h>
+
 #include <Util/References.h>
 #include <Util/ReferenceCounter.h>
 #include <Util/IO/FileName.h>
@@ -18,6 +20,7 @@
 
 #include <vector>
 #include <unordered_map>
+#include <functional>
 
 namespace Rendering {
 class Mesh;
@@ -29,6 +32,7 @@ class Node;
 namespace ThesisSascha {
 
 class WorkerThread;
+class Preprocessor;
 
 class SurfelManager : public Util::ReferenceCounter<SurfelManager> {
 	PROVIDES_TYPE_NAME(SurfelManager)
@@ -40,15 +44,22 @@ public:
 	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo);
 	void attachSurfel(Node* node, const SurfelInfo_t& surfelInfo);
 
-	bool loadSurfel(Node* node);
+	bool loadSurfel(FrameContext& frameContext, Node* node);
 	Rendering::Mesh* getSurfel(Node* node);
 	void disposeSurfel(Node* node);
 
 	void update();
+
+	Preprocessor* getPreprocessor() const { return preprocessor.get(); }
+	const Util::FileName getBasePath() const { return basePath; }
+
+	void executeAsync(const std::function<void()>& function);
 private:
 	Util::FileName basePath;
 	WorkerThread* worker;
 	std::unordered_map<Util::StringIdentifier, Util::Reference<Rendering::Mesh>> surfels;
+
+	Util::Reference<Preprocessor> preprocessor;
 };
 
 } /* namespace ThesisSascha */

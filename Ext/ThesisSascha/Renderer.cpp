@@ -58,18 +58,18 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = size*size;
-	/*if(qSize > tStart)
-		return NodeRendererResult::PASS_ON;
+	//if(qSize > tStart)
+	//	return NodeRendererResult::PASS_ON;
 	float tEnd = 300; //TODO: calculate by customizable function
-	*/
 
-	if(manager->loadSurfel(node)) {
+
+	if(manager->loadSurfel(context, node)) {
 		Mesh* mesh = manager->getSurfel(node);
 		uint32_t maxCount = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
-		uint32_t count = maxCount; //TODO: calculate
+		uint32_t count = std::min(static_cast<uint32_t>(relCovering*size*4), maxCount); //TODO: calculate
 		float pSize = (relCovering*size*4)/count; //TODO: calculate
 
 		RenderingContext& rc = context.getRenderingContext();
@@ -85,7 +85,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		//return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
 	}
 
-	return NodeRendererResult::NODE_HANDLED;
+	return NodeRendererResult::PASS_ON;
 }
 
 State* Renderer::clone() const {
