@@ -183,19 +183,12 @@ static bool importGeometryNode(ImportContext & ctxt, const std::string & nodeTyp
 
 	} // Load MMF data from a Base64 encoded block.
 	else if(dataDesc->getValue(Consts::DATA_BLOCK) != nullptr) {
-		const std::string dataBlock = dataDesc->getString(Consts::DATA_BLOCK);
-		if(dataDesc->getString(Consts::ATTR_DATA_ENCODING) != Consts::DATA_ENCODING_BASE64) {
-			WARN("Unknown data block encoding.");
-			return false;
-		}
-		const std::vector<uint8_t> meshData = Util::decodeBase64(dataBlock);
+		node = ImporterTools::getMeshImportHandler()->handleImport(dataDesc);
 
-		Rendering::Mesh * mesh = Rendering::Serialization::loadMesh("mmf", std::string(meshData.begin(), meshData.end()));
-		if(mesh == nullptr) {
+		if(node == nullptr) {
 			WARN("Loading the mesh failed.");
 			return false;
 		}
-		node = new GeometryNode(mesh);
 	} //  A Mesh-Object is already contained in the description.
 	else if(dataType == "mesh") {
 		Rendering::Serialization::MeshWrapper_t * meshWrapper = dynamic_cast<Rendering::Serialization::MeshWrapper_t *>(dataDesc->getValue(Consts::ATTR_MESH_DATA));
