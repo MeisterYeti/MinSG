@@ -43,6 +43,15 @@ class MeshImportHandler {
 		 * @return Arbitrary node or tree of nodes that represents the mesh inside the scene graph.
 		 */
 		virtual Node * handleImport(const Util::FileLocator& locator, const std::string & url, const NodeDescription * description);
+
+		/**
+		 * Load the base64 encoded mesh from the given node description and create MinSG Nodes for it.
+		 * This function is called by the StdImporter when a Mesh is base64 encoded.
+		 *
+		 * @param description Description of the Node to which the mesh belongs.
+		 * @return Arbitrary node or tree of nodes that represents the mesh inside the scene graph.
+		 */
+		virtual Node * handleImport(const NodeDescription * description);
 };
 
 }
