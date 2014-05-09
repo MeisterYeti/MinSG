@@ -28,6 +28,7 @@ class Mesh;
 
 namespace MinSG {
 class Node;
+class GeometryNode;
 
 namespace ThesisSascha {
 
@@ -48,10 +49,14 @@ public:
 	Rendering::Mesh* getSurfel(Node* node);
 	void disposeSurfel(Node* node);
 
+	void storeMesh(GeometryNode* node);
+	bool loadMesh(GeometryNode* node);
+
 	void update();
 
 	Preprocessor* getPreprocessor() const { return preprocessor.get(); }
 	const Util::FileName getBasePath() const { return basePath; }
+	void setBasePath(const Util::FileName& filename)  { basePath = filename; }
 
 	void executeAsync(const std::function<void()>& function);
 private:

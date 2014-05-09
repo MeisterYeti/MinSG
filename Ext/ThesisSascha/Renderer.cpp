@@ -11,7 +11,7 @@
 #include "Renderer.h"
 #include "SurfelManager.h"
 
-#include <MinSG/Core/Nodes/Node.h>
+#include <MinSG/Core/Nodes/GeometryNode.h>
 #include <MinSG/Core/RenderParam.h>
 
 #include <Rendering/Mesh/Mesh.h>
@@ -41,8 +41,16 @@ Renderer::~Renderer() {
 	// TODO Auto-generated destructor stub
 }
 
-NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+template<typename T>
+inline T clamp(T value, T min, T max) {
+	return std::max(min, std::min(max, value));
+}
 
+NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
+	if(geometry != nullptr) {
+		manager->loadMesh(geometry);
+	}
 	// calculate treshold
 	// if below threshold
 	//   remove or ignore surfels
@@ -54,13 +62,13 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	//   else
 	//     draw surfels
 
-	float tStart = 200; //TODO: calculate by customizable function
+	float tStart = 20; //TODO: calculate by customizable function
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = size*size;
-	//if(qSize > tStart)
-	//	return NodeRendererResult::PASS_ON;
-	float tEnd = 300; //TODO: calculate by customizable function
+	if(qSize > tStart)
+		return NodeRendererResult::PASS_ON;
+	float tEnd = 10; //TODO: calculate by customizable function
 
 
 	if(manager->loadSurfel(context, node)) {
@@ -69,8 +77,16 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
-		uint32_t count = std::min(static_cast<uint32_t>(relCovering*size*4), maxCount); //TODO: calculate
-		float pSize = (relCovering*size*4)/count; //TODO: calculate
+		uint32_t count = clamp<uint32_t>(static_cast<uint32_t>(relCovering*size*4), 1, maxCount); //TODO: calculate
+		float pSize = clamp<float>((relCovering*size*4)/count, 1, 32); //TODO: calculate
+		if(qSize>tEnd && tStart>tEnd){
+			pSize *= (tStart-qSize) / (tStart-tEnd);
+			pSize = clamp<float>(pSize,1,32);
+		}
+		if(qSize>tEnd && tStart>tEnd){
+			count *= (tStart-qSize) / (tStart-tEnd);
+			count = clamp<uint32_t>(count,1,maxCount);
+		}
 
 		RenderingContext& rc = context.getRenderingContext();
 		rc.pushAndSetPointParameters(PointParameters(pSize, false));
@@ -81,8 +97,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		rc.popMatrix();
 		rc.popPointParameters();
 
-		return NodeRendererResult::NODE_HANDLED;
-		//return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
+		return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
 	}
 
 	return NodeRendererResult::PASS_ON;
