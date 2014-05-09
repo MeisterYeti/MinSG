@@ -30,12 +30,14 @@
 
 #include <MinSG/Core/RenderParam.h>
 #include <MinSG/Core/Nodes/Node.h>
+#include <MinSG/Core/Nodes/GroupNode.h>
 #include <MinSG/Core/Nodes/CameraNodeOrtho.h>
 //#include <MinSG/Helper/StdNodeVisitors.h>
 #include <MinSG/Ext/BlueSurfels/SurfelGenerator.h>
 
 #include <Util/Graphics/PixelAccessor.h>
 #include <Util/GenericAttribute.h>
+#include <Util/StringUtils.h>
 #include <Util/Timer.h>
 
 #include <string>
@@ -53,6 +55,7 @@ namespace ThesisSascha {
 using namespace Rendering;
 using namespace Util;
 
+static const StringIdentifier SURFEL_ID("surfelId");
 
 void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (Node *)>& enterFun, const std::function<void (Node *)>& leaveFun) {
 	if(root == nullptr) {
@@ -104,12 +107,15 @@ void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worl
 	}
 }
 
-NodeVisitor::status pass(Node * node) {
+NodeVisitor::status generateId(Node * node) {
+	if(!node->isAttributeSet(SURFEL_ID)) {
+		node->setAttribute(SURFEL_ID, GenericAttribute::createString(StringUtils::createRandomString(32)));
+	}
 	return NodeVisitor::CONTINUE_TRAVERSAL;
 }
 
 Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager) {
-	checkProcessing = pass;
+	prepareNode = generateId;
 	surfelGenerator->setReusalRate(0.9);
 	// do nothing
 }
@@ -118,7 +124,7 @@ Preprocessor::~Preprocessor() {
 	delete surfelGenerator;
 }
 
-std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext& frameContext, Node* node) {
+Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameContext& frameContext, Node* node) {
 
 	RenderingContext& rc = frameContext.getRenderingContext();
 	static Util::Timer timer;
@@ -152,7 +158,7 @@ std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext
 	timer.reset();
 
 	// render textures
-	std::vector<Reference<Texture> > textures;
+	SurfelTextures_t textures;
 	{
 		Geometry::Matrix4x4 inverseModelMatrix = node->getWorldMatrix().inverse();
 		Reference<Texture> depthT = TextureUtils::createDepthTexture(resolution.x(), resolution.y());
@@ -224,22 +230,29 @@ std::pair<Reference<Mesh>,float> Preprocessor::createSurfelsForNode(FrameContext
 		//FileName file("test.png");
 		//Serialization::saveTexture(rc, textures[SIZE].get(), file);
 	}
-	std::cout << "render: " << timer.getMilliseconds() << " ";
-	timer.reset();
-	std::pair<Util::Reference<Rendering::Mesh>,float> surfels = surfelGenerator->createSurfels(
-		*TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get()).get(),
-		*TextureUtils::createColorPixelAccessor(rc, textures[NORMAL].get()).get(),
-		*TextureUtils::createColorPixelAccessor(rc, textures[COLOR].get()).get(),
-		*TextureUtils::createColorPixelAccessor(rc, textures[SIZE].get()).get()
-	);
-	std::cout << "gen: " << timer.getMilliseconds() << std::endl;
-	return surfels;
+	std::cout << "render: " << timer.getMilliseconds() << std::endl;
+	return textures;
+}
+
+void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node) {
+	static Util::Timer timer;
+	RenderingContext& rc = frameContext.getRenderingContext();
+	Util::Reference<Util::PixelAccessor> pos = TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get());
+	Util::Reference<Util::PixelAccessor> normal = TextureUtils::createColorPixelAccessor(rc, textures[NORMAL].get());
+	Util::Reference<Util::PixelAccessor> color = TextureUtils::createColorPixelAccessor(rc, textures[COLOR].get());
+	Util::Reference<Util::PixelAccessor> size = TextureUtils::createColorPixelAccessor(rc, textures[SIZE].get());
+	manager->executeAsync([=] () {
+		timer.reset();
+		std::cout << "building surfels... " << std::endl;
+		SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
+		std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
+		manager->storeSurfel(node, surfels);
+	});
 }
 
 void Preprocessor::visitNode(FrameContext& frameContext, Node* node) {
-	std::pair<Reference<Mesh>,float> surfelInfo = createSurfelsForNode(frameContext, node);
-	//TODO: use node complexity threshold
-	manager->storeSurfel(node, surfelInfo);
+	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+	buildAndStoreSurfels(frameContext, textures, node);
 }
 
 void Preprocessor::initShaders(const FileName& helperShader, const FileName& positionShader, const FileName& normalShader, const FileName& colorShader, const FileName& sizeShader) {
@@ -284,11 +297,21 @@ void Preprocessor::initShaders(const FileName& helperShader, const FileName& pos
 using std::placeholders::_1;
 void Preprocessor::process(FrameContext& frameContext, Node* root) {
 	std::function<void(Node*)> visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1);
-	forEachNodeBottomUp(root, checkProcessing, visit);
+	forEachNodeBottomUp(root, prepareNode, visit);
 }
 
-void Preprocessor::updateSurfels(Node* node, const std::function<bool(Node*)>& abortFn) {
+void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, const std::function<bool(Node*)>& abortFn) {
+	if(!node->findAttribute(SURFEL_ID)) {
+		WARN("Could not update surfels for node. Missing surfel id.");
+		return;
+	}
 
+	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+	buildAndStoreSurfels(frameContext, textures, node);
+
+	if(node->hasParent() && abortFn(node->getParent())) {
+		updateSurfels(frameContext, node->getParent(), abortFn);
+	}
 }
 
 } /* namespace ThesisSascha */

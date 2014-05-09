@@ -47,18 +47,22 @@ class SurfelManager;
 class Preprocessor : public Util::ReferenceCounter<Preprocessor> {
 	PROVIDES_TYPE_NAME(Preprocessor)
 public:
+	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
+	typedef std::vector<Util::Reference<Rendering::Texture> > SurfelTextures_t;
+
 	Preprocessor(SurfelManager* manager);
 	virtual ~Preprocessor();
 
 	void initShaders(const Util::FileName& helperShader, const Util::FileName& positionShader, const Util::FileName& normalShader, const Util::FileName& colorShader, const Util::FileName& sizeShader);
-	void setCheckProcessing(const std::function<NodeVisitor::status(Node*)>& checkProcessing) {
-		this->checkProcessing = checkProcessing;
+	void setPrepareNodeFn(const std::function<NodeVisitor::status(Node*)>& prepareNode) {
+		this->prepareNode = prepareNode;
 	}
 	void process(FrameContext& frameContext, Node* root);
 
-	void updateSurfels(Node* node, const std::function<bool(Node*)>& abortFn);
+	void updateSurfels(FrameContext& frameContext, Node* node, const std::function<bool(Node*)>& abortFn = [] (Node*) {return false;});
 private:
-	std::pair<Util::Reference<Rendering::Mesh>,float> createSurfelsForNode(FrameContext& frameContext, Node* node);
+	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
+	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node);
 	void visitNode(FrameContext& frameContext, Node* node);
 
 	std::vector<Util::Reference<Rendering::Shader> > shaders;
@@ -69,9 +73,9 @@ private:
 	float verticalResolution;
 
 	BlueSurfels::SurfelGenerator* surfelGenerator;
-	Util::Reference<SurfelManager> manager;
+	Util::WeakPointer<SurfelManager> manager;
 
-	std::function<NodeVisitor::status(Node*)> checkProcessing;
+	std::function<NodeVisitor::status(Node*)> prepareNode;
 };
 
 } /* namespace ThesisSascha */
