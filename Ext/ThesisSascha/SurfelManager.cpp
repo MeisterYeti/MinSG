@@ -8,20 +8,25 @@
 #ifdef MINSG_EXT_THESISSASCHA
 
 #include "SurfelManager.h"
+#include "Preprocessor.h"
 
 #include <MinSG/Core/Nodes/Node.h>
 
 #include <Rendering/Mesh/Mesh.h>
 #include <Rendering/Serialization/Serialization.h>
 
+#include <Util/Utils.h>
 #include <Util/GenericAttribute.h>
 #include <Util/GenericAttributeSerialization.h>
 #include <Util/StringUtils.h>
 #include <Util/Concurrency/Concurrency.h>
 #include <Util/Concurrency/UserThread.h>
 #include <Util/Concurrency/DataStructures/SyncQueue.h>
+#include <Util/IO/FileUtils.h>
 
 #include <iostream>
+
+#define MAX_JOB_NUMBER 10
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -32,11 +37,12 @@ using namespace Util::Concurrency;
 
 class WorkerThread : public UserThread {
 public:
-	enum IOJobType_t { CLOSE=0, READ=1, WRITE=2 };
+	enum IOJobType_t { CLOSE=0, READ=1, WRITE=2, FUNCTION=3 };
 	struct SurfelIOJob_t {
 		FileName file;
 		Reference<Mesh> mesh;
 		float relCovering;
+		std::function<void()> function;
 		IOJobType_t type;
 	};
 
@@ -45,8 +51,11 @@ public:
 	void close();
 	void write(const FileName& file, Mesh* mesh, float relCovering);
 	void read(const FileName& file, Mesh* mesh, float relCovering);
+	void executeAsync(const std::function<void()>& function);
+	void flush();
 protected:
 	void run() override;
+	void executeJob();
 
 	SyncQueue<SurfelIOJob_t> ioQueue;
 	bool closed;
@@ -64,33 +73,63 @@ void WorkerThread::close() {
 	ioQueue.push({});
 }
 
+void WorkerThread::executeJob() {
+	if(closed)
+		return;
+	SurfelIOJob_t job = ioQueue.pop();
+	if(job.type == READ) {
+		std::cout << "loading surfel " << job.file.toString() << std::endl;
+		Mesh* mesh = Serialization::loadMesh(job.file);
+		// swap on main thread
+		swapQueue.push({job.mesh, mesh});
+	} else if(job.type == WRITE) {
+		std::cout << "saving surfel " << job.file.toString() << std::endl;
+		Serialization::saveMesh(job.mesh.get(), job.file);
+	} else if(job.type == FUNCTION) {
+		std::cout << "execute async function " << std::endl;
+		job.function();
+	}
+}
+
 void WorkerThread::run() {
 	while(!closed) {
-		SurfelIOJob_t job = ioQueue.pop();
-		if(job.type == READ) {
-			std::cout << "loading surfel " << job.file.toString() << std::endl;
-			// TODO: load relCovering
-			Mesh* mesh = Serialization::loadMesh(job.file);
-			// swap on main thread
-			swapQueue.push({job.mesh, mesh});
-		} else if(job.type == WRITE) {
-			// TODO: save relCovering
-			std::cout << "saving surfel " << job.file.toString() << std::endl;
-			Serialization::saveMesh(job.mesh.get(), job.file);
-		}
+		executeJob();
 	}
 }
 
 void WorkerThread::write(const FileName& file, Mesh* mesh, float relCovering) {
 	if(closed)
 		return;
-	ioQueue.push({file, Reference<Mesh>(mesh), relCovering, WRITE});
+	ioQueue.push({file, Reference<Mesh>(mesh), relCovering, [] () {}, WRITE});
+	if(ioQueue.size() > MAX_JOB_NUMBER)
+		flush();
 }
 
 void WorkerThread::read(const FileName& file, Mesh* mesh, float relCovering) {
 	if(closed)
 		return;
-	ioQueue.push({file, Reference<Mesh>(mesh), relCovering, READ});
+	ioQueue.push({file, Reference<Mesh>(mesh), relCovering, [] () {}, READ});
+	if(ioQueue.size() > MAX_JOB_NUMBER)
+		flush();
+}
+
+void WorkerThread::executeAsync(const std::function<void()>& function) {
+	if(closed)
+		return;
+	SurfelIOJob_t job;
+	job.function = function;
+	job.type = FUNCTION;
+	ioQueue.push(job);
+	if(ioQueue.size() > MAX_JOB_NUMBER)
+		flush();
+}
+
+void WorkerThread::flush() {
+	if(closed)
+		return;
+	while(!closed && ioQueue.size() >= MAX_JOB_NUMBER) {
+		Utils::sleep(10);
+	}
 }
 
 static const StringIdentifier SURFEL_ID("surfelId");
@@ -114,7 +153,7 @@ StringIDAttribute_t * unserializeID(const std::pair<std::string, const Util::Gen
 	return new StringIDAttribute_t(StringIdentifier(s.substr(GAStringIdentifierHeader.length())));
 }
 
-SurfelManager::SurfelManager(const Util::FileName& basePath) : basePath(basePath), worker(new WorkerThread(this)) {
+SurfelManager::SurfelManager(const Util::FileName& basePath) : basePath(basePath), worker(new WorkerThread(this)), preprocessor(new Preprocessor(this)) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 }
 
@@ -171,7 +210,7 @@ inline const StringIdentifier getStringId(Node* node) {
 	return id;
 }
 
-bool SurfelManager::loadSurfel(Node* node) {
+bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node) {
 	if(node->isInstance())
 		node = node->getPrototype();
 	if(!node->isAttributeSet(SURFEL_ID))
@@ -185,6 +224,10 @@ bool SurfelManager::loadSurfel(Node* node) {
 	FileName surfelFile(basePath);
 	surfelFile.setFile(node->getAttribute(SURFEL_ID)->toString());
 	surfelFile.setEnding("mmf");
+
+	if(!FileUtils::isFile(surfelFile)) {
+		preprocessor->updateSurfels(frameContext, node);
+	}
 
 	Mesh* mesh = new Mesh();
 	worker->read(surfelFile, mesh, node->isAttributeSet(SURFEL_REL_COVERING) ? node->getAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f);
@@ -219,6 +262,10 @@ void SurfelManager::update() {
 		WorkerThread::MeshSwap_t meshSwap = worker->swapQueue.pop();
 		meshSwap.first->swap(*meshSwap.second.get());
 	}
+}
+
+void SurfelManager::executeAsync(const std::function<void()>& function) {
+	worker->executeAsync(function);
 }
 
 } /* namespace ThesisSascha */
