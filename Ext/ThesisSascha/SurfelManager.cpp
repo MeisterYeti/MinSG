@@ -10,7 +10,7 @@
 #include "SurfelManager.h"
 #include "Preprocessor.h"
 
-#include <MinSG/Core/Nodes/Node.h>
+#include <MinSG/Core/Nodes/GeometryNode.h>
 
 #include <Rendering/Mesh/Mesh.h>
 #include <Rendering/Serialization/Serialization.h>
@@ -35,13 +35,52 @@ using namespace Rendering;
 using namespace Util;
 using namespace Util::Concurrency;
 
+typedef WrapperAttribute<StringIdentifier> StringIDAttribute_t;
+const std::string GATypeNameStringIdentifier("StringIdentifier");
+const std::string GAStringIdentifierHeader("$[StringId]");
+
+static const StringIdentifier SURFEL_ID("surfelId");
+static const StringIdentifier SURFEL_STRINGID("surfelStrId");
+static const StringIdentifier SURFELS("surfels");
+static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
+
+static const StringIdentifier MESH_ID("meshId");
+static const StringIdentifier MESH_STRINGID("meshStrId");
+
+inline const StringIdentifier getStringId(Node* node, const StringIdentifier& idName, const StringIdentifier& strName) {
+	StringIdentifier id;
+	if(!node->isAttributeSet(strName)) {
+		id = node->getAttribute(idName)->toString();
+		node->setAttribute(strName, new StringIDAttribute_t(id));
+	} else {
+		const StringIDAttribute_t * objContainer = dynamic_cast<const StringIDAttribute_t *> (node->getAttribute(strName));
+		if(objContainer == nullptr) {
+			WARN("Wrong attribute type for " + strName.toString());
+		} else {
+			id = objContainer->get();
+		}
+	}
+	return id;
+}
+
+std::pair<std::string, std::string> serializeID(const std::pair<const Util::GenericAttribute *, const Util::GenericAttributeMap *> & attributeAndContext) {
+	auto idAttribute = dynamic_cast<const StringIDAttribute_t *>(attributeAndContext.first);
+	return std::make_pair(GATypeNameStringIdentifier, GAStringIdentifierHeader + idAttribute->get().toString());
+}
+
+StringIDAttribute_t * unserializeID(const std::pair<std::string, const Util::GenericAttributeMap *> & contentAndContext) {
+	const std::string & s = contentAndContext.first;
+	if(!StringUtils::beginsWith(s.c_str(), GAStringIdentifierHeader.c_str()))
+		return nullptr;
+	return new StringIDAttribute_t(StringIdentifier(s.substr(GAStringIdentifierHeader.length())));
+}
+
 class WorkerThread : public UserThread {
 public:
 	enum IOJobType_t { CLOSE=0, READ=1, WRITE=2, FUNCTION=3 };
 	struct SurfelIOJob_t {
 		FileName file;
 		Reference<Mesh> mesh;
-		float relCovering;
 		std::function<void()> function;
 		IOJobType_t type;
 	};
@@ -49,8 +88,8 @@ public:
 	WorkerThread(SurfelManager* manager) : closed(false), manager(manager) { start(); };
 	virtual ~WorkerThread() {};
 	void close();
-	void write(const FileName& file, Mesh* mesh, float relCovering);
-	void read(const FileName& file, Mesh* mesh, float relCovering);
+	void write(const FileName& file, Mesh* mesh);
+	void read(const FileName& file, Mesh* mesh);
 	void executeAsync(const std::function<void()>& function);
 	void flush();
 protected:
@@ -97,18 +136,18 @@ void WorkerThread::run() {
 	}
 }
 
-void WorkerThread::write(const FileName& file, Mesh* mesh, float relCovering) {
+void WorkerThread::write(const FileName& file, Mesh* mesh) {
 	if(closed)
 		return;
-	ioQueue.push({file, Reference<Mesh>(mesh), relCovering, [] () {}, WRITE});
+	ioQueue.push({file, Reference<Mesh>(mesh), [] () {}, WRITE});
 	if(ioQueue.size() > MAX_JOB_NUMBER)
 		flush();
 }
 
-void WorkerThread::read(const FileName& file, Mesh* mesh, float relCovering) {
+void WorkerThread::read(const FileName& file, Mesh* mesh) {
 	if(closed)
 		return;
-	ioQueue.push({file, Reference<Mesh>(mesh), relCovering, [] () {}, READ});
+	ioQueue.push({file, Reference<Mesh>(mesh), [] () {}, READ});
 	if(ioQueue.size() > MAX_JOB_NUMBER)
 		flush();
 }
@@ -132,27 +171,6 @@ void WorkerThread::flush() {
 	}
 }
 
-static const StringIdentifier SURFEL_ID("surfelId");
-static const StringIdentifier SURFEL_STRINGID("surfelStrId");
-static const StringIdentifier SURFELS("surfels");
-static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
-
-typedef WrapperAttribute<StringIdentifier> StringIDAttribute_t;
-const std::string GATypeNameStringIdentifier("StringIdentifier");
-const std::string GAStringIdentifierHeader("$[StringId]");
-
-std::pair<std::string, std::string> serializeID(const std::pair<const Util::GenericAttribute *, const Util::GenericAttributeMap *> & attributeAndContext) {
-	auto idAttribute = dynamic_cast<const StringIDAttribute_t *>(attributeAndContext.first);
-	return std::make_pair(GATypeNameStringIdentifier, GAStringIdentifierHeader + idAttribute->get().toString());
-}
-
-StringIDAttribute_t * unserializeID(const std::pair<std::string, const Util::GenericAttributeMap *> & contentAndContext) {
-	const std::string & s = contentAndContext.first;
-	if(!StringUtils::beginsWith(s.c_str(), GAStringIdentifierHeader.c_str()))
-		return nullptr;
-	return new StringIDAttribute_t(StringIdentifier(s.substr(GAStringIdentifierHeader.length())));
-}
-
 SurfelManager::SurfelManager(const Util::FileName& basePath) : basePath(basePath), worker(new WorkerThread(this)), preprocessor(new Preprocessor(this)) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 }
@@ -167,7 +185,6 @@ SurfelManager::~SurfelManager() {
 void SurfelManager::attachSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 	if(node->isInstance())
 		node = node->getPrototype();
-	//TODO: create better ids?
 	StringIdentifier id(StringUtils::createRandomString(32));
 	if(!node->isAttributeSet(SURFEL_ID)) {
 		node->setAttribute(SURFEL_ID, GenericAttribute::createString(id.toString()));
@@ -182,59 +199,42 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 		node = node->getPrototype();
 	attachSurfel(node, surfelInfo);
 
-	if(!node->isAttributeSet(SURFEL_STRINGID)) {
-		StringIdentifier id(node->getAttribute(SURFEL_ID)->toString());
-		node->setAttribute(SURFEL_STRINGID, new StringIDAttribute_t(id));
-	}
+	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
 
-	FileName surfelFile(basePath);
-	surfelFile.setFile(node->getAttribute(SURFEL_ID)->toString());
+	FileName surfelFile(basePath.toString() + "surfels/");
+	if(!FileUtils::isDir(surfelFile))
+		FileUtils::createDir(surfelFile, true);
+	surfelFile.setFile(id.toString());
 	surfelFile.setEnding("mmf");
 
-	worker->write(surfelFile, surfelInfo.first.get(), surfelInfo.second);
-}
-
-inline const StringIdentifier getStringId(Node* node) {
-	StringIdentifier id;
-	if(!node->isAttributeSet(SURFEL_STRINGID)) {
-		id = node->getAttribute(SURFEL_ID)->toString();
-		node->setAttribute(SURFEL_STRINGID, new StringIDAttribute_t(id));
-	} else {
-		const StringIDAttribute_t * objContainer = dynamic_cast<const StringIDAttribute_t *> (node->getAttribute(SURFEL_STRINGID));
-		if(objContainer == nullptr) {
-			WARN("Wrong attribute type for " + SURFEL_STRINGID.toString());
-		} else {
-			id = objContainer->get();
-		}
-	}
-	return id;
+	worker->write(surfelFile, surfelInfo.first.get());
 }
 
 bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node) {
-	if(node->isInstance())
-		node = node->getPrototype();
-	if(!node->isAttributeSet(SURFEL_ID))
+	Node* proto = node->isInstance() ? node->getPrototype() : node;
+	if(!proto->isAttributeSet(SURFEL_ID))
 		return false;
 
-	const StringIdentifier id = getStringId(node);
+	const StringIdentifier id = getStringId(proto, SURFEL_ID, SURFEL_STRINGID);
 
-	if(node->isAttributeSet(SURFELS) || surfels.count(id) > 0)
+	if(proto->isAttributeSet(SURFELS) || surfels.count(id) > 0)
 		return true;
 
-	FileName surfelFile(basePath);
-	surfelFile.setFile(node->getAttribute(SURFEL_ID)->toString());
+	FileName surfelFile(basePath.toString() + "surfels/");
+	if(!FileUtils::isDir(surfelFile))
+		FileUtils::createDir(surfelFile, true);
+	surfelFile.setFile(id.toString());
 	surfelFile.setEnding("mmf");
 
+	// FIXME: Here be Dragons! (infinite loop when surfel file not exist)
 	if(!FileUtils::isFile(surfelFile)) {
-		preprocessor->updateSurfels(frameContext, node);
+		//preprocessor->updateSurfels(frameContext, node);
 	}
 
 	Mesh* mesh = new Mesh();
-	worker->read(surfelFile, mesh, node->isAttributeSet(SURFEL_REL_COVERING) ? node->getAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f);
+	worker->read(surfelFile, mesh);
 	//node->setAttribute(SURFELS, new ReferenceAttribute<Mesh>(mesh));
 	surfels[id] = mesh;
-	//TODO: store&load relCovering
-	//node->setAttribute(SURFEL_REL_COVERING, GenericAttribute::createNumber(surfelInfo.second));
 	return false;
 }
 
@@ -245,7 +245,7 @@ Mesh* SurfelManager::getSurfel(Node* node) {
 	if(node->isInstance())
 		node = node->getPrototype();
 
-	const StringIdentifier id = getStringId(node);
+	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
 
 	if(surfels.count(id) > 0)
 		return surfels[id].get();
@@ -255,6 +255,55 @@ Mesh* SurfelManager::getSurfel(Node* node) {
 		return mesh;
 	}
 	return nullptr;
+}
+
+void SurfelManager::storeMesh(GeometryNode* node) {
+	if(node->isInstance())
+		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
+
+	if(!node->isAttributeSet(MESH_ID)) {
+		StringIdentifier id(StringUtils::createRandomString(32));
+		node->setAttribute(MESH_ID, GenericAttribute::createString(id.toString()));
+	}
+	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
+
+	FileName file(basePath.toString() + "meshes/");
+	if(!FileUtils::isDir(file))
+		FileUtils::createDir(file, true);
+	file.setFile(id.toString());
+	file.setEnding("mmf");
+
+	Serialization::saveMesh(node->getMesh(), file);
+}
+
+bool SurfelManager::loadMesh(GeometryNode* node) {
+	if(node->isInstance())
+		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
+
+	if(!node->isAttributeSet(MESH_ID)) {
+		StringIdentifier id(StringUtils::createRandomString(32));
+		node->setAttribute(MESH_ID, GenericAttribute::createString(id.toString()));
+	}
+	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
+
+	if(surfels.count(id) > 0)
+		return true;
+
+	FileName file(basePath.toString() + "meshes/");
+	if(!FileUtils::isDir(file))
+		FileUtils::createDir(file, true);
+	file.setFile(id.toString());
+	file.setEnding("mmf");
+
+	if(!FileUtils::isFile(file)) {
+		WARN("Mesh file '" + file.toString() + "' does not exist.");
+		return false;
+	}
+
+	Mesh* mesh = node->getMesh();
+	worker->read(file, mesh);
+	surfels[id] = mesh;
+	return false;
 }
 
 void SurfelManager::update() {

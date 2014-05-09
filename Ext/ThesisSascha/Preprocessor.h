@@ -59,7 +59,7 @@ public:
 	}
 	void process(FrameContext& frameContext, Node* root);
 
-	void updateSurfels(FrameContext& frameContext, Node* node, const std::function<bool(Node*)>& abortFn = [] (Node*) {return false;});
+	void updateSurfels(FrameContext& frameContext, Node* node, const std::function<bool(Node*)>& abortFn = [] (Node*) {return true;});
 private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node);
