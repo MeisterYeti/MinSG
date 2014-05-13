@@ -59,6 +59,7 @@ public:
 	void setBasePath(const Util::FileName& filename)  { basePath = filename; }
 
 	void executeAsync(const std::function<void()>& function);
+	void executeOnMainThread(const std::function<void()>& function);
 private:
 	Util::FileName basePath;
 	WorkerThread* worker;
