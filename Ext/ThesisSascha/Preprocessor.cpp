@@ -246,7 +246,8 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 		std::cout << "building surfels... " << std::endl;
 		SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 		std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-		manager->storeSurfel(node, surfels);
+		std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels);
+		manager->executeOnMainThread(storeSurfel);
 	});
 }
 
@@ -300,7 +301,7 @@ void Preprocessor::process(FrameContext& frameContext, Node* root) {
 	forEachNodeBottomUp(root, prepareNode, visit);
 }
 
-void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, const std::function<bool(Node*)>& abortFn) {
+void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node) {
 	if(!node->findAttribute(SURFEL_ID)) {
 		WARN("Could not update surfels for node. Missing surfel id.");
 		return;
@@ -309,8 +310,8 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, const s
 	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 	buildAndStoreSurfels(frameContext, textures, node);
 
-	if(node->hasParent() && abortFn(node->getParent())) {
-		updateSurfels(frameContext, node->getParent(), abortFn);
+	if(node->hasParent() && !abortUpdate(node->getParent())) {
+		updateSurfels(frameContext, node->getParent());
 	}
 }
 
