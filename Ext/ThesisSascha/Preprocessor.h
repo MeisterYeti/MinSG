@@ -19,6 +19,7 @@
 #include <Util/ReferenceCounter.h>
 #include <Util/IO/FileName.h>
 #include <Util/TypeNameMacro.h>
+#include <Util/AttributeProvider.h>
 
 #include <Geometry/Vec2.h>
 #include <Geometry/Vec3.h>
@@ -44,7 +45,7 @@ class SurfelGenerator;
 namespace ThesisSascha {
 class SurfelManager;
 
-class Preprocessor : public Util::ReferenceCounter<Preprocessor> {
+class Preprocessor : public Util::AttributeProvider, public Util::ReferenceCounter<Preprocessor> {
 	PROVIDES_TYPE_NAME(Preprocessor)
 public:
 	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
@@ -54,12 +55,13 @@ public:
 	virtual ~Preprocessor();
 
 	void initShaders(const Util::FileName& helperShader, const Util::FileName& positionShader, const Util::FileName& normalShader, const Util::FileName& colorShader, const Util::FileName& sizeShader);
-	void setPrepareNodeFn(const std::function<NodeVisitor::status(Node*)>& prepareNode) {
-		this->prepareNode = prepareNode;
-	}
+
 	void process(FrameContext& frameContext, Node* root);
 
-	void updateSurfels(FrameContext& frameContext, Node* node, const std::function<bool(Node*)>& abortFn = [] (Node*) {return true;});
+	void updateSurfels(FrameContext& frameContext, Node* node);
+
+	void setPrepareNodeFn(const std::function<NodeVisitor::status(Node*)>& function) { this->prepareNode = function; }
+	void setAbortUpdateFn(const std::function<bool(Node*)> & function) { this->abortUpdate = function; }
 private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node);
@@ -76,6 +78,7 @@ private:
 	Util::WeakPointer<SurfelManager> manager;
 
 	std::function<NodeVisitor::status(Node*)> prepareNode;
+	std::function<bool(Node*)> abortUpdate;
 };
 
 } /* namespace ThesisSascha */

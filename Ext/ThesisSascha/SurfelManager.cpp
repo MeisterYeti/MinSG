@@ -96,12 +96,13 @@ protected:
 	void run() override;
 	void executeJob();
 
-	SyncQueue<SurfelIOJob_t> ioQueue;
+	SyncQueue<SurfelIOJob_t> jobQueue;
 	bool closed;
 	SurfelManager* manager;
 public:
 	typedef std::pair<Reference<Mesh>,Reference<Mesh>> MeshSwap_t;
 	SyncQueue<MeshSwap_t> swapQueue;
+	SyncQueue<std::function<void()>> mainThreadQueue;
 };
 
 void WorkerThread::close() {
@@ -109,13 +110,13 @@ void WorkerThread::close() {
 		return;
 	closed = true;
 	// push empty job to stop waiting on the queue (don't know if this is required, but just in case)
-	ioQueue.push({});
+	jobQueue.push({});
 }
 
 void WorkerThread::executeJob() {
 	if(closed)
 		return;
-	SurfelIOJob_t job = ioQueue.pop();
+	SurfelIOJob_t job = jobQueue.pop();
 	if(job.type == READ) {
 		std::cout << "loading surfel " << job.file.toString() << std::endl;
 		Mesh* mesh = Serialization::loadMesh(job.file);
@@ -139,16 +140,16 @@ void WorkerThread::run() {
 void WorkerThread::write(const FileName& file, Mesh* mesh) {
 	if(closed)
 		return;
-	ioQueue.push({file, Reference<Mesh>(mesh), [] () {}, WRITE});
-	if(ioQueue.size() > MAX_JOB_NUMBER)
+	jobQueue.push({file, Reference<Mesh>(mesh), [] () {}, WRITE});
+	if(jobQueue.size() > MAX_JOB_NUMBER)
 		flush();
 }
 
 void WorkerThread::read(const FileName& file, Mesh* mesh) {
 	if(closed)
 		return;
-	ioQueue.push({file, Reference<Mesh>(mesh), [] () {}, READ});
-	if(ioQueue.size() > MAX_JOB_NUMBER)
+	jobQueue.push({file, Reference<Mesh>(mesh), [] () {}, READ});
+	if(jobQueue.size() > MAX_JOB_NUMBER)
 		flush();
 }
 
@@ -158,15 +159,15 @@ void WorkerThread::executeAsync(const std::function<void()>& function) {
 	SurfelIOJob_t job;
 	job.function = function;
 	job.type = FUNCTION;
-	ioQueue.push(job);
-	if(ioQueue.size() > MAX_JOB_NUMBER)
+	jobQueue.push(job);
+	if(jobQueue.size() > MAX_JOB_NUMBER)
 		flush();
 }
 
 void WorkerThread::flush() {
 	if(closed)
 		return;
-	while(!closed && ioQueue.size() >= MAX_JOB_NUMBER) {
+	while(!closed && jobQueue.size() >= MAX_JOB_NUMBER) {
 		Utils::sleep(10);
 	}
 }
@@ -185,8 +186,8 @@ SurfelManager::~SurfelManager() {
 void SurfelManager::attachSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 	if(node->isInstance())
 		node = node->getPrototype();
-	StringIdentifier id(StringUtils::createRandomString(32));
 	if(!node->isAttributeSet(SURFEL_ID)) {
+		StringIdentifier id(StringUtils::createRandomString(32));
 		node->setAttribute(SURFEL_ID, GenericAttribute::createString(id.toString()));
 		node->setAttribute(SURFEL_STRINGID, new StringIDAttribute_t(id));
 	}
@@ -208,6 +209,7 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 	surfelFile.setEnding("mmf");
 
 	worker->write(surfelFile, surfelInfo.first.get());
+	surfels[id] = surfelInfo.first;
 }
 
 bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node) {
@@ -273,7 +275,8 @@ void SurfelManager::storeMesh(GeometryNode* node) {
 	file.setFile(id.toString());
 	file.setEnding("mmf");
 
-	Serialization::saveMesh(node->getMesh(), file);
+	if(!FileUtils::isFile(file))
+		Serialization::saveMesh(node->getMesh(), file);
 }
 
 bool SurfelManager::loadMesh(GeometryNode* node) {
@@ -281,8 +284,7 @@ bool SurfelManager::loadMesh(GeometryNode* node) {
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
 
 	if(!node->isAttributeSet(MESH_ID)) {
-		StringIdentifier id(StringUtils::createRandomString(32));
-		node->setAttribute(MESH_ID, GenericAttribute::createString(id.toString()));
+		return false;
 	}
 	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
 
@@ -307,6 +309,9 @@ bool SurfelManager::loadMesh(GeometryNode* node) {
 }
 
 void SurfelManager::update() {
+	while(!worker->mainThreadQueue.empty()) {
+		worker->mainThreadQueue.pop()();
+	}
 	while(!worker->swapQueue.empty()) {
 		WorkerThread::MeshSwap_t meshSwap = worker->swapQueue.pop();
 		meshSwap.first->swap(*meshSwap.second.get());
@@ -315,6 +320,10 @@ void SurfelManager::update() {
 
 void SurfelManager::executeAsync(const std::function<void()>& function) {
 	worker->executeAsync(function);
+}
+
+void SurfelManager::executeOnMainThread(const std::function<void()>& function) {
+	worker->mainThreadQueue.push(function);
 }
 
 } /* namespace ThesisSascha */

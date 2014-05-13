@@ -25,6 +25,8 @@
 
 #include <string>
 
+#define MAX_POINT_SIZE 32
+
 namespace MinSG {
 namespace ThesisSascha {
 using namespace Util;
@@ -33,12 +35,13 @@ using namespace Rendering;
 static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 
 Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel) {
-	// TODO Auto-generated constructor stub
-
+	transitionStart = [] (Node*) { return 200; };
+	transitionEnd = [] (Node*) { return 100; };
+	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
+	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 }
 
 Renderer::~Renderer() {
-	// TODO Auto-generated destructor stub
 }
 
 template<typename T>
@@ -62,13 +65,13 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	//   else
 	//     draw surfels
 
-	float tStart = 20; //TODO: calculate by customizable function
+	float tStart = transitionStart(node);
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
-	float qSize = size*size;
+	float qSize = std::sqrt(size);
 	if(qSize > tStart)
 		return NodeRendererResult::PASS_ON;
-	float tEnd = 10; //TODO: calculate by customizable function
+	float tEnd = transitionEnd(node);
 
 
 	if(manager->loadSurfel(context, node)) {
@@ -77,11 +80,11 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
-		uint32_t count = clamp<uint32_t>(static_cast<uint32_t>(relCovering*size*4), 1, maxCount); //TODO: calculate
-		float pSize = clamp<float>((relCovering*size*4)/count, 1, 32); //TODO: calculate
+		uint32_t count = clamp<uint32_t>(countFn(node, size, maxCount, relCovering), 1, maxCount);
+		float pSize = clamp<float>(sizeFn(node, size, maxCount, relCovering), 1, MAX_POINT_SIZE);
 		if(qSize>tEnd && tStart>tEnd){
 			pSize *= (tStart-qSize) / (tStart-tEnd);
-			pSize = clamp<float>(pSize,1,32);
+			pSize = clamp<float>(pSize,1,MAX_POINT_SIZE);
 		}
 		if(qSize>tEnd && tStart>tEnd){
 			count *= (tStart-qSize) / (tStart-tEnd);

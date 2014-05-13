@@ -18,7 +18,10 @@
 #include <Util/ReferenceCounter.h>
 #include <Util/TypeNameMacro.h>
 
+#include <functional>
+
 namespace MinSG {
+class Node;
 namespace ThesisSascha {
 class SurfelManager;
 
@@ -31,9 +34,18 @@ public:
 	virtual NodeRendererResult displayNode(FrameContext & context, Node * node, const RenderParam & rp);
 
 	virtual State * clone() const;
-private:
 
+	void setTransitionStartFn(const std::function<float(Node*)>& function) { transitionStart = function; }
+	void setTransitionEndFn(const std::function<float(Node*)>& function) { transitionEnd = function; }
+	void setCountFn(const std::function<uint32_t(Node*,float,uint32_t,float)>& function) { countFn = function; }
+	void setSizeFn(const std::function<float(Node*,float,uint32_t,float)>& function) { sizeFn = function; }
+private:
 	Util::Reference<SurfelManager> manager;
+
+	std::function<float(Node*)> transitionStart;
+	std::function<float(Node*)> transitionEnd;
+	std::function<uint32_t(Node*,float,uint32_t,float)> countFn;
+	std::function<float(Node*,float,uint32_t,float)> sizeFn;
 };
 
 } /* namespace ThesisSascha */
