@@ -27,6 +27,7 @@ namespace ThesisSascha {
 using namespace Rendering;
 using namespace SceneManagement;
 
+//TODO: create external node when data exceeds limit?
 Node * ImportHandler::handleImport(const Util::FileLocator& locator,const std::string & filename, const SceneManagement::NodeDescription * description) {
 	GeometryNode* node = dynamic_cast<GeometryNode*>(loadModel(Util::FileName(filename), 0, nullptr,locator));
 	manager->storeMesh(node);
