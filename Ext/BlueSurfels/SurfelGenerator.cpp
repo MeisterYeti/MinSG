@@ -130,8 +130,8 @@ Util::Reference<Rendering::Mesh> SurfelGenerator::buildBlueSurfels(const std::ve
 	std::vector<size_t> newSurfelIds;
 
 	std::cout << "Overall number:" << surfels.size();
-// Util::Timer t;
-// t.reset();
+	Util::Timer t;
+	t.reset();
 	unsigned int acceptSamples=1;
 	unsigned int samplesPerRound=160;
 	unsigned int round = 1;
@@ -177,10 +177,10 @@ Util::Reference<Rendering::Mesh> SurfelGenerator::buildBlueSurfels(const std::ve
 			//std::cout << "Shuffle\n";
 		}
 		if( (round%500) == 0){
-			//std::cout << "Round:"<<round<<" #Samples:"<< surfelCount<<" : "<<t.getMilliseconds()<<" ms; samplesPerRound "<<samplesPerRound<<" accept:"<<acceptSamples<<"\n";
+			std::cout << "Round:"<<round<<" #Samples:"<< surfelCount<<" : "<<t.getMilliseconds()<<" ms; samplesPerRound "<<samplesPerRound<<" accept:"<<acceptSamples<<"\n";
 			samplesPerRound = std::max(samplesPerRound*0.5f,20.0f);
 			acceptSamples = std::min( static_cast<unsigned int>(samplesPerRound*0.3), acceptSamples+1);
-// 			t.reset();
+			t.reset();
 		}
 
 		for(size_t i=static_cast<size_t>(samples.size()*reusalRate);i>0;--i){

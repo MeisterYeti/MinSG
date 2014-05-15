@@ -12,6 +12,7 @@
 #include "SurfelManager.h"
 
 #include <MinSG/Core/Nodes/GeometryNode.h>
+#include <MinSG/Core/Nodes/ListNode.h>
 #include <MinSG/Core/RenderParam.h>
 
 #include <Rendering/Mesh/Mesh.h>
