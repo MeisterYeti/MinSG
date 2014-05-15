@@ -33,6 +33,7 @@ Node * ImportHandler::handleImport(const Util::FileLocator& locator,const std::s
 	manager->storeMesh(node);
 	Util::Reference<Mesh> mesh = node->getMesh();
 	node->setMesh(new Mesh);
+	node->setFixedBB(mesh->getBoundingBox());
 	return node;
 }
 
