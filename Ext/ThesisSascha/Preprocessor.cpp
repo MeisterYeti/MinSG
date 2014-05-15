@@ -234,26 +234,34 @@ Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameCo
 	return textures;
 }
 
-void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node) {
+void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async) {
 	static Util::Timer timer;
 	RenderingContext& rc = frameContext.getRenderingContext();
 	Util::Reference<Util::PixelAccessor> pos = TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get());
 	Util::Reference<Util::PixelAccessor> normal = TextureUtils::createColorPixelAccessor(rc, textures[NORMAL].get());
 	Util::Reference<Util::PixelAccessor> color = TextureUtils::createColorPixelAccessor(rc, textures[COLOR].get());
 	Util::Reference<Util::PixelAccessor> size = TextureUtils::createColorPixelAccessor(rc, textures[SIZE].get());
-	manager->executeAsync([=] () {
+	if(async) {
+		manager->executeAsync([=] () {
+			timer.reset();
+			std::cout << "building surfels... " << std::endl;
+			SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
+			std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
+			std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, true);
+			manager->executeOnMainThread(storeSurfel);
+		});
+	} else {
 		timer.reset();
 		std::cout << "building surfels... " << std::endl;
 		SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 		std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-		std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels);
-		manager->executeOnMainThread(storeSurfel);
-	});
+		manager->storeSurfel(node, surfels, false);
+	}
 }
 
-void Preprocessor::visitNode(FrameContext& frameContext, Node* node) {
+void Preprocessor::visitNode(FrameContext& frameContext, Node* node, bool async) {
 	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-	buildAndStoreSurfels(frameContext, textures, node);
+	buildAndStoreSurfels(frameContext, textures, node, async);
 }
 
 void Preprocessor::initShaders(const FileName& helperShader, const FileName& positionShader, const FileName& normalShader, const FileName& colorShader, const FileName& sizeShader) {
@@ -296,8 +304,8 @@ void Preprocessor::initShaders(const FileName& helperShader, const FileName& pos
 }
 
 using std::placeholders::_1;
-void Preprocessor::process(FrameContext& frameContext, Node* root) {
-	std::function<void(Node*)> visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1);
+void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
+	std::function<void(Node*)> visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, async);
 	forEachNodeBottomUp(root, prepareNode, visit);
 }
 
@@ -308,7 +316,7 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node) {
 	}
 
 	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-	buildAndStoreSurfels(frameContext, textures, node);
+	buildAndStoreSurfels(frameContext, textures, node, true);
 
 	if(node->hasParent() && !abortUpdate(node->getParent())) {
 		updateSurfels(frameContext, node->getParent());
