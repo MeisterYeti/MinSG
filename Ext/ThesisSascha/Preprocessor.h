@@ -56,7 +56,7 @@ public:
 
 	void initShaders(const Util::FileName& helperShader, const Util::FileName& positionShader, const Util::FileName& normalShader, const Util::FileName& colorShader, const Util::FileName& sizeShader);
 
-	void process(FrameContext& frameContext, Node* root);
+	void process(FrameContext& frameContext, Node* root, bool async = true);
 
 	void updateSurfels(FrameContext& frameContext, Node* node);
 
@@ -64,8 +64,8 @@ public:
 	void setAbortUpdateFn(const std::function<bool(Node*)> & function) { this->abortUpdate = function; }
 private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
-	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node);
-	void visitNode(FrameContext& frameContext, Node* node);
+	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
+	void visitNode(FrameContext& frameContext, Node* node, bool async);
 
 	std::vector<Util::Reference<Rendering::Shader> > shaders;
 	std::vector<Util::Reference<MinSG::CameraNodeOrtho> > cameras;

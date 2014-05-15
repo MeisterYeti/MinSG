@@ -42,15 +42,15 @@ public:
 	SurfelManager(const Util::FileName& basePath);
 	virtual ~SurfelManager();
 
-	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo);
+	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = true);
 	void attachSurfel(Node* node, const SurfelInfo_t& surfelInfo);
 
-	bool loadSurfel(FrameContext& frameContext, Node* node);
+	bool loadSurfel(FrameContext& frameContext, Node* node, bool async = true);
 	Rendering::Mesh* getSurfel(Node* node);
 	void disposeSurfel(Node* node);
 
-	void storeMesh(GeometryNode* node);
-	bool loadMesh(GeometryNode* node);
+	void storeMesh(GeometryNode* node, bool async = true);
+	bool loadMesh(GeometryNode* node, bool async = true);
 
 	void update();
 
