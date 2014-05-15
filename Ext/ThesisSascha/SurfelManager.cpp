@@ -11,6 +11,7 @@
 #include "Preprocessor.h"
 
 #include <MinSG/Core/Nodes/GeometryNode.h>
+#include <MinSG/Core/Nodes/ListNode.h>
 
 #include <Rendering/Mesh/Mesh.h>
 #include <Rendering/Serialization/Serialization.h>
@@ -118,12 +119,16 @@ void WorkerThread::executeJob() {
 		return;
 	SurfelIOJob_t job = jobQueue.pop();
 	if(job.type == READ) {
-		std::cout << "loading surfel " << job.file.toString() << std::endl;
+		if(!FileUtils::isFile(job.file)) {
+			WARN("Could not load file: " + job.file.toString());
+			return;
+		}
+		std::cout << "loading mesh " << job.file.toString() << std::endl;
 		Mesh* mesh = Serialization::loadMesh(job.file);
 		// swap on main thread
 		swapQueue.push({job.mesh, mesh});
 	} else if(job.type == WRITE) {
-		std::cout << "saving surfel " << job.file.toString() << std::endl;
+		std::cout << "saving mesh " << job.file.toString() << std::endl;
 		Serialization::saveMesh(job.mesh.get(), job.file);
 	} else if(job.type == FUNCTION) {
 		std::cout << "execute async function " << std::endl;
@@ -195,7 +200,7 @@ void SurfelManager::attachSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 	node->setAttribute(SURFEL_REL_COVERING, GenericAttribute::createNumber(surfelInfo.second));
 }
 
-void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
+void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async) {
 	if(node->isInstance())
 		node = node->getPrototype();
 	attachSurfel(node, surfelInfo);
@@ -208,11 +213,15 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 	surfelFile.setFile(id.toString());
 	surfelFile.setEnding("mmf");
 
-	worker->write(surfelFile, surfelInfo.first.get());
+	if(async) {
+		worker->write(surfelFile, surfelInfo.first.get());
+	} else {
+		Serialization::saveMesh(surfelInfo.first.get(), surfelFile);
+	}
 	surfels[id] = surfelInfo.first;
 }
 
-bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node) {
+bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool async) {
 	Node* proto = node->isInstance() ? node->getPrototype() : node;
 	if(!proto->isAttributeSet(SURFEL_ID))
 		return false;
@@ -234,8 +243,11 @@ bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node) {
 	}
 
 	Mesh* mesh = new Mesh();
-	worker->read(surfelFile, mesh);
-	//node->setAttribute(SURFELS, new ReferenceAttribute<Mesh>(mesh));
+	if(async) {
+		worker->read(surfelFile, mesh);
+	} else {
+		mesh = Serialization::loadMesh(surfelFile);
+	}
 	surfels[id] = mesh;
 	return false;
 }
@@ -259,7 +271,7 @@ Mesh* SurfelManager::getSurfel(Node* node) {
 	return nullptr;
 }
 
-void SurfelManager::storeMesh(GeometryNode* node) {
+void SurfelManager::storeMesh(GeometryNode* node, bool async) {
 	if(node->isInstance())
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
 
@@ -268,6 +280,8 @@ void SurfelManager::storeMesh(GeometryNode* node) {
 		node->setAttribute(MESH_ID, GenericAttribute::createString(id.toString()));
 	}
 	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
+	if(surfels.count(id) > 0)
+		return;
 
 	FileName file(basePath.toString() + "meshes/");
 	if(!FileUtils::isDir(file))
@@ -275,11 +289,15 @@ void SurfelManager::storeMesh(GeometryNode* node) {
 	file.setFile(id.toString());
 	file.setEnding("mmf");
 
-	if(!FileUtils::isFile(file))
+	if(async) {
+		worker->write(file, node->getMesh());
+	} else {
 		Serialization::saveMesh(node->getMesh(), file);
+	}
+	//surfels[id] = node->getMesh();
 }
 
-bool SurfelManager::loadMesh(GeometryNode* node) {
+bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
 	if(node->isInstance())
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
 
@@ -302,8 +320,13 @@ bool SurfelManager::loadMesh(GeometryNode* node) {
 		return false;
 	}
 
-	Mesh* mesh = node->getMesh();
-	worker->read(file, mesh);
+	Mesh* mesh;
+	if(async) {
+		mesh = node->getMesh();
+		worker->read(file, mesh);
+	} else {
+		mesh = Serialization::loadMesh(file);
+	}
 	surfels[id] = mesh;
 	return false;
 }
