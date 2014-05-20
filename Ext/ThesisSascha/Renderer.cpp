@@ -53,7 +53,7 @@ inline T clamp(T value, T min, T max) {
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
 	if(geometry != nullptr) {
-		manager->loadMesh(geometry);
+		manager->loadMesh(geometry, false);
 	}
 	// calculate treshold
 	// if below threshold
@@ -75,7 +75,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	float tEnd = transitionEnd(node);
 
 
-	if(manager->loadSurfel(context, node)) {
+	if(manager->loadSurfel(context, node, false)) {
 		Mesh* mesh = manager->getSurfel(node);
 		uint32_t maxCount = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
@@ -104,7 +104,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
 	}
 
-	return NodeRendererResult::PASS_ON;
+	return NodeRendererResult::NODE_HANDLED;
 }
 
 State* Renderer::clone() const {

@@ -58,10 +58,10 @@ public:
 
 	void process(FrameContext& frameContext, Node* root, bool async = true);
 
-	void updateSurfels(FrameContext& frameContext, Node* node);
+	void updateSurfels(FrameContext& frameContext, Node* node, float coverage=1.0f, bool async = true);
 
 	void setPrepareNodeFn(const std::function<NodeVisitor::status(Node*)>& function) { this->prepareNode = function; }
-	void setAbortUpdateFn(const std::function<bool(Node*)> & function) { this->abortUpdate = function; }
+	void setAbortUpdateFn(const std::function<bool(Node*,float)> & function) { this->abortUpdate = function; }
 private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
@@ -78,7 +78,10 @@ private:
 	Util::WeakPointer<SurfelManager> manager;
 
 	std::function<NodeVisitor::status(Node*)> prepareNode;
-	std::function<bool(Node*)> abortUpdate;
+	std::function<bool(Node*,float)> abortUpdate;
+
+	uint32_t processed;
+	uint32_t nodeCount;
 };
 
 } /* namespace ThesisSascha */
