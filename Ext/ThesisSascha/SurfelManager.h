@@ -20,6 +20,7 @@
 
 #include <vector>
 #include <unordered_map>
+#include <list>
 #include <functional>
 
 namespace Rendering {
@@ -39,7 +40,7 @@ class SurfelManager : public Util::ReferenceCounter<SurfelManager> {
 	PROVIDES_TYPE_NAME(SurfelManager)
 public:
 	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
-	SurfelManager(const Util::FileName& basePath);
+	SurfelManager(const Util::FileName& basePath, uint64_t maxMemory);
 	virtual ~SurfelManager();
 
 	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = true);
@@ -56,16 +57,27 @@ public:
 
 	Preprocessor* getPreprocessor() const { return preprocessor.get(); }
 	const Util::FileName getBasePath() const { return basePath; }
+	void setBasePath(const std::string& filename)  { basePath = Util::FileName(filename); }
 	void setBasePath(const Util::FileName& filename)  { basePath = filename; }
 
 	void executeAsync(const std::function<void()>& function);
 	void executeOnMainThread(const std::function<void()>& function);
+
+	void updateLRU(Util::StringIdentifier id);
+	void unloadLRU();
 private:
 	Util::FileName basePath;
 	WorkerThread* worker;
 	std::unordered_map<Util::StringIdentifier, Util::Reference<Rendering::Mesh>> surfels;
+	std::unordered_map<Rendering::Mesh*,Util::StringIdentifier> idByMesh;
+	typedef std::list<Util::StringIdentifier> LRUCache_t;
+	LRUCache_t lruCache;
+	typedef std::unordered_map<Util::StringIdentifier, LRUCache_t::iterator> LRUCacheIndex_t;
+	LRUCacheIndex_t lruCacheIndex;
 
 	Util::Reference<Preprocessor> preprocessor;
+	uint64_t maxMemory;
+	uint64_t usedMemory;
 };
 
 } /* namespace ThesisSascha */

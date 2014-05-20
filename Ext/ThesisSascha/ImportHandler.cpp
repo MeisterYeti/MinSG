@@ -30,7 +30,7 @@ using namespace SceneManagement;
 //TODO: create external node when data exceeds limit?
 Node * ImportHandler::handleImport(const Util::FileLocator& locator,const std::string & filename, const SceneManagement::NodeDescription * description) {
 	GeometryNode* node = dynamic_cast<GeometryNode*>(loadModel(Util::FileName(filename), 0, nullptr,locator));
-	manager->storeMesh(node);
+	manager->storeMesh(node, false);
 	Util::Reference<Mesh> mesh = node->getMesh();
 	node->setMesh(new Mesh);
 	node->setFixedBB(mesh->getBoundingBox());
@@ -53,7 +53,7 @@ Node * ImportHandler::handleImport(const SceneManagement::NodeDescription * desc
 		return nullptr;
 	}
 	GeometryNode* node = new GeometryNode(mesh);
-	manager->storeMesh(node);
+	manager->storeMesh(node, false);
 	node->setMesh(new Mesh);
 	node->setFixedBB(mesh->getBoundingBox());
 	return node;
