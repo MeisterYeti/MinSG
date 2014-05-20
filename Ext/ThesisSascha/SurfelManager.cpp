@@ -9,6 +9,7 @@
 
 #include "SurfelManager.h"
 #include "Preprocessor.h"
+#include "Definitions.h"
 
 #include <MinSG/Core/Nodes/GeometryNode.h>
 #include <MinSG/Core/Nodes/ListNode.h>
@@ -27,7 +28,6 @@
 
 #include <iostream>
 
-#define MAX_JOB_NUMBER 10
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -35,18 +35,6 @@ namespace ThesisSascha {
 using namespace Rendering;
 using namespace Util;
 using namespace Util::Concurrency;
-
-typedef WrapperAttribute<StringIdentifier> StringIDAttribute_t;
-const std::string GATypeNameStringIdentifier("StringIdentifier");
-const std::string GAStringIdentifierHeader("$[StringId]");
-
-static const StringIdentifier SURFEL_ID("surfelId");
-static const StringIdentifier SURFEL_STRINGID("surfelStrId");
-static const StringIdentifier SURFELS("surfels");
-static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
-
-static const StringIdentifier MESH_ID("meshId");
-static const StringIdentifier MESH_STRINGID("meshStrId");
 
 inline const StringIdentifier getStringId(Node* node, const StringIdentifier& idName, const StringIdentifier& strName) {
 	StringIdentifier id;
@@ -130,6 +118,7 @@ void WorkerThread::executeJob() {
 	} else if(job.type == WRITE) {
 		std::cout << "saving mesh " << job.file.toString() << std::endl;
 		Serialization::saveMesh(job.mesh.get(), job.file);
+		FileUtils::flush(job.file);
 	} else if(job.type == FUNCTION) {
 		std::cout << "execute async function " << std::endl;
 		job.function();
@@ -177,7 +166,8 @@ void WorkerThread::flush() {
 	}
 }
 
-SurfelManager::SurfelManager(const Util::FileName& basePath) : basePath(basePath), worker(new WorkerThread(this)), preprocessor(new Preprocessor(this)) {
+SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory) : basePath(basePath), worker(new WorkerThread(this)),
+		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 }
 
@@ -216,9 +206,21 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool
 	if(async) {
 		worker->write(surfelFile, surfelInfo.first.get());
 	} else {
+		std::cout << "saving mesh " << surfelFile.toString() << std::endl;
 		Serialization::saveMesh(surfelInfo.first.get(), surfelFile);
+		FileUtils::flush(surfelFile);
 	}
-	surfels[id] = surfelInfo.first;
+	auto it = lruCacheIndex.find(id);
+	if(it != lruCacheIndex.end()) {
+		lruCacheIndex.erase(id);
+		lruCache.erase(it->second);
+	}
+	auto sIt = surfels.find(id);
+	if(sIt != surfels.end()) {
+		if(sIt->second.isNotNull())
+			usedMemory -= sIt->second->getMainMemoryUsage() + sIt->second->getGraphicsMemoryUsage();
+		surfels.erase(sIt);
+	}
 }
 
 bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool async) {
@@ -230,6 +232,11 @@ bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool asyn
 
 	if(proto->isAttributeSet(SURFELS) || surfels.count(id) > 0)
 		return true;
+
+	if(usedMemory >= maxMemory) {
+		unloadLRU();
+		return false;
+	}
 
 	FileName surfelFile(basePath.toString() + "surfels/");
 	if(!FileUtils::isDir(surfelFile))
@@ -246,9 +253,14 @@ bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool asyn
 	if(async) {
 		worker->read(surfelFile, mesh);
 	} else {
+		std::cout << "loading mesh " << surfelFile << std::endl;
 		mesh = Serialization::loadMesh(surfelFile);
+		//TODO: distinction between main memory and graphics memory
+		usedMemory += mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
+		std::cout << "memory usage: " << usedMemory << "/" << maxMemory << std::endl;
 	}
 	surfels[id] = mesh;
+	updateLRU(id);
 	return false;
 }
 
@@ -261,8 +273,10 @@ Mesh* SurfelManager::getSurfel(Node* node) {
 
 	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
 
-	if(surfels.count(id) > 0)
+	if(surfels.count(id) > 0) {
+		updateLRU(id);
 		return surfels[id].get();
+	}
 	if(node->isAttributeSet(SURFELS)) {
 		Mesh* mesh = node->getAttribute(SURFELS)->toType<ReferenceAttribute<Mesh>>()->get();
 		surfels[id] = mesh;
@@ -292,9 +306,21 @@ void SurfelManager::storeMesh(GeometryNode* node, bool async) {
 	if(async) {
 		worker->write(file, node->getMesh());
 	} else {
+		std::cout << "saving mesh " << file.toString() << std::endl;
 		Serialization::saveMesh(node->getMesh(), file);
+		FileUtils::flush(file);
 	}
-	//surfels[id] = node->getMesh();
+	auto it = lruCacheIndex.find(id);
+	if(it != lruCacheIndex.end()) {
+		lruCacheIndex.erase(id);
+		lruCache.erase(it->second);
+	}
+	auto sIt = surfels.find(id);
+	if(sIt != surfels.end()) {
+		if(sIt->second.isNotNull())
+			usedMemory -= sIt->second->getMainMemoryUsage() + sIt->second->getGraphicsMemoryUsage();
+		surfels.erase(sIt);
+	}
 }
 
 bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
@@ -308,6 +334,11 @@ bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
 
 	if(surfels.count(id) > 0)
 		return true;
+
+	if(usedMemory >= maxMemory) {
+		unloadLRU();
+		return false;
+	}
 
 	FileName file(basePath.toString() + "meshes/");
 	if(!FileUtils::isDir(file))
@@ -325,9 +356,14 @@ bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
 		mesh = node->getMesh();
 		worker->read(file, mesh);
 	} else {
+		std::cout << "loading mesh " << file << std::endl;
 		mesh = Serialization::loadMesh(file);
+		node->setMesh(mesh);
+		usedMemory += mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
+		std::cout << "memory usage: " << usedMemory << "/" << maxMemory << std::endl;
 	}
 	surfels[id] = mesh;
+	updateLRU(id);
 	return false;
 }
 
@@ -338,6 +374,7 @@ void SurfelManager::update() {
 	while(!worker->swapQueue.empty()) {
 		WorkerThread::MeshSwap_t meshSwap = worker->swapQueue.pop();
 		meshSwap.first->swap(*meshSwap.second.get());
+		usedMemory += meshSwap.first->getMainMemoryUsage() + meshSwap.first->getGraphicsMemoryUsage();
 	}
 }
 
@@ -347,6 +384,29 @@ void SurfelManager::executeAsync(const std::function<void()>& function) {
 
 void SurfelManager::executeOnMainThread(const std::function<void()>& function) {
 	worker->mainThreadQueue.push(function);
+}
+
+void SurfelManager::updateLRU(Util::StringIdentifier id) {
+	auto it = lruCacheIndex.find(id);
+	if(it != lruCacheIndex.end()) {
+		lruCache.erase(it->second);
+	}
+	auto end = lruCache.insert(lruCache.end(), id);
+	lruCacheIndex[id] = end;
+}
+
+void SurfelManager::unloadLRU() {
+	auto id = lruCache.front();
+	lruCache.pop_front();
+	lruCacheIndex.erase(id);
+
+	auto sIt = surfels.find(id);
+	if(sIt != surfels.end()) {
+		if(sIt->second.isNotNull())
+			usedMemory -= sIt->second->getMainMemoryUsage() + sIt->second->getGraphicsMemoryUsage();
+		surfels.erase(sIt);
+	}
+	std::cout << "unload " << id.toString() << ", memory usage: " << usedMemory << "/" << maxMemory << std::endl;
 }
 
 } /* namespace ThesisSascha */

@@ -11,6 +11,7 @@
 
 #include "Preprocessor.h"
 #include "SurfelManager.h"
+#include "Definitions.h"
 
 #include <Geometry/Frustum.h>
 #include <Geometry/Tools.h>
@@ -32,7 +33,7 @@
 #include <MinSG/Core/Nodes/Node.h>
 #include <MinSG/Core/Nodes/GroupNode.h>
 #include <MinSG/Core/Nodes/CameraNodeOrtho.h>
-//#include <MinSG/Helper/StdNodeVisitors.h>
+#include <MinSG/Helper/StdNodeVisitors.h>
 #include <MinSG/Ext/BlueSurfels/SurfelGenerator.h>
 
 #include <Util/Graphics/PixelAccessor.h>
@@ -54,8 +55,6 @@ namespace ThesisSascha {
 
 using namespace Rendering;
 using namespace Util;
-
-static const StringIdentifier SURFEL_ID("surfelId");
 
 void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (Node *)>& enterFun, const std::function<void (Node *)>& leaveFun) {
 	if(root == nullptr) {
@@ -114,7 +113,7 @@ NodeVisitor::status generateId(Node * node) {
 	return NodeVisitor::CONTINUE_TRAVERSAL;
 }
 
-Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager) {
+Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager), nodeCount(0), processed(0) {
 	prepareNode = generateId;
 	surfelGenerator->setReusalRate(0.9);
 	// do nothing
@@ -247,7 +246,7 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 			std::cout << "building surfels... " << std::endl;
 			SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 			std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-			std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, true);
+			std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, async);
 			manager->executeOnMainThread(storeSurfel);
 		});
 	} else {
@@ -255,13 +254,16 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 		std::cout << "building surfels... " << std::endl;
 		SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 		std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-		manager->storeSurfel(node, surfels, false);
+		manager->storeSurfel(node, surfels, async);
 	}
 }
 
 void Preprocessor::visitNode(FrameContext& frameContext, Node* node, bool async) {
+	//if(countTriangles(node) <= surfelGenerator->getMaxAbsSurfels())
+		//return;
 	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 	buildAndStoreSurfels(frameContext, textures, node, async);
+	std::cout << "Progress: " << (static_cast<float>(++processed)/nodeCount) << std::endl;
 }
 
 void Preprocessor::initShaders(const FileName& helperShader, const FileName& positionShader, const FileName& normalShader, const FileName& colorShader, const FileName& sizeShader) {
@@ -305,21 +307,29 @@ void Preprocessor::initShaders(const FileName& helperShader, const FileName& pos
 
 using std::placeholders::_1;
 void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
+	{
+		auto nodes = collectNodes(root);
+		processed = 0;
+		nodeCount = nodes.size();
+	}
 	std::function<void(Node*)> visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, async);
 	forEachNodeBottomUp(root, prepareNode, visit);
 }
 
-void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node) {
+void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {
+	//TODO: return updated nodes?
 	if(!node->findAttribute(SURFEL_ID)) {
 		WARN("Could not update surfels for node. Missing surfel id.");
 		return;
 	}
 
-	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-	buildAndStoreSurfels(frameContext, textures, node, true);
+	coverage *= node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
 
-	if(node->hasParent() && !abortUpdate(node->getParent())) {
-		updateSurfels(frameContext, node->getParent());
+	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+	buildAndStoreSurfels(frameContext, textures, node, async);
+
+	if(node->hasParent() && !abortUpdate(node, coverage)) {
+		updateSurfels(frameContext, node->getParent(), coverage, async);
 	}
 }
 
