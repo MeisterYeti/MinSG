@@ -113,6 +113,15 @@ NodeVisitor::status generateId(Node * node) {
 	return NodeVisitor::CONTINUE_TRAVERSAL;
 }
 
+uint32_t countComplexity(Node * root) {
+	uint32_t complexity = 0;
+	forEachNodeTopDown<Node>(root,[&complexity](Node* node){
+		//TODO: external nodes
+		complexity += node->isAttributeSet(MESH_COMPLEXITY) ? node->findAttribute(MESH_COMPLEXITY)->toUnsignedInt() : 0;
+	});
+	return complexity;
+}
+
 Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager), nodeCount(0), processed(0) {
 	prepareNode = generateId;
 	surfelGenerator->setReusalRate(0.9);
@@ -259,10 +268,10 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 }
 
 void Preprocessor::visitNode(FrameContext& frameContext, Node* node, bool async) {
-	//if(countTriangles(node) <= surfelGenerator->getMaxAbsSurfels())
-		//return;
-	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-	buildAndStoreSurfels(frameContext, textures, node, async);
+	if(countComplexity(node) > surfelGenerator->getMaxAbsSurfels()) {
+		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+		buildAndStoreSurfels(frameContext, textures, node, async);
+	}
 	std::cout << "Progress: " << (static_cast<float>(++processed)/nodeCount) << std::endl;
 }
 

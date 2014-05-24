@@ -2,6 +2,7 @@
 
 #include "ImportHandler.h"
 #include "SurfelManager.h"
+#include "Definitions.h"
 
 #include <MinSG/Helper/Helper.h>
 #include <MinSG/Core/Nodes/GeometryNode.h>
@@ -17,6 +18,7 @@
 #include <Util/StringUtils.h>
 #include <Util/Macros.h>
 #include <Util/Encoding.h>
+#include <Util/GenericAttribute.h>
 
 #include <vector>
 #include <string>
@@ -34,6 +36,7 @@ Node * ImportHandler::handleImport(const Util::FileLocator& locator,const std::s
 	Util::Reference<Mesh> mesh = node->getMesh();
 	node->setMesh(new Mesh);
 	node->setFixedBB(mesh->getBoundingBox());
+	node->setAttribute(MESH_COMPLEXITY, Util::GenericAttribute::createNumber(mesh->getPrimitiveCount()));
 	return node;
 }
 
@@ -56,6 +59,7 @@ Node * ImportHandler::handleImport(const SceneManagement::NodeDescription * desc
 	manager->storeMesh(node, false);
 	node->setMesh(new Mesh);
 	node->setFixedBB(mesh->getBoundingBox());
+	node->setAttribute(MESH_COMPLEXITY, Util::GenericAttribute::createNumber(mesh->getPrimitiveCount()));
 	return node;
 }
 

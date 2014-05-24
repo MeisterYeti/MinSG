@@ -29,6 +29,7 @@ static const Util::StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 
 static const Util::StringIdentifier MESH_ID("meshId");
 static const Util::StringIdentifier MESH_STRINGID("meshStrId");
+static const Util::StringIdentifier MESH_COMPLEXITY("meshComplexity");
 
 }
 }

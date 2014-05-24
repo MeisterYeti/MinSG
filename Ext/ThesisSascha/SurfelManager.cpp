@@ -223,19 +223,19 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool
 	}
 }
 
-bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool async) {
+SurfelManager::MeshLoadResult_t SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool async) {
 	Node* proto = node->isInstance() ? node->getPrototype() : node;
 	if(!proto->isAttributeSet(SURFEL_ID))
-		return false;
+		return Failed;
 
 	const StringIdentifier id = getStringId(proto, SURFEL_ID, SURFEL_STRINGID);
 
 	if(proto->isAttributeSet(SURFELS) || surfels.count(id) > 0)
-		return true;
+		return Success;
 
 	if(usedMemory >= maxMemory) {
 		unloadLRU();
-		return false;
+		return Pending;
 	}
 
 	FileName surfelFile(basePath.toString() + "surfels/");
@@ -247,6 +247,7 @@ bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool asyn
 	// FIXME: Here be Dragons! (infinite loop when surfel file not exist)
 	if(!FileUtils::isFile(surfelFile)) {
 		//preprocessor->updateSurfels(frameContext, node);
+		return Failed;
 	}
 
 	Mesh* mesh = new Mesh();
@@ -261,7 +262,7 @@ bool SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool asyn
 	}
 	surfels[id] = mesh;
 	updateLRU(id);
-	return false;
+	return Pending;
 }
 
 void SurfelManager::disposeSurfel(Node* node) {
@@ -323,21 +324,21 @@ void SurfelManager::storeMesh(GeometryNode* node, bool async) {
 	}
 }
 
-bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
+SurfelManager::MeshLoadResult_t SurfelManager::loadMesh(GeometryNode* node, bool async) {
 	if(node->isInstance())
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
 
 	if(!node->isAttributeSet(MESH_ID)) {
-		return false;
+		return Failed;
 	}
 	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
 
 	if(surfels.count(id) > 0)
-		return true;
+		return Success;
 
 	if(usedMemory >= maxMemory) {
 		unloadLRU();
-		return false;
+		return Pending;
 	}
 
 	FileName file(basePath.toString() + "meshes/");
@@ -348,7 +349,7 @@ bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
 
 	if(!FileUtils::isFile(file)) {
 		WARN("Mesh file '" + file.toString() + "' does not exist.");
-		return false;
+		return Failed;
 	}
 
 	Mesh* mesh;
@@ -364,7 +365,7 @@ bool SurfelManager::loadMesh(GeometryNode* node, bool async) {
 	}
 	surfels[id] = mesh;
 	updateLRU(id);
-	return false;
+	return Pending;
 }
 
 void SurfelManager::update() {
