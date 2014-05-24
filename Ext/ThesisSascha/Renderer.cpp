@@ -74,8 +74,8 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		return NodeRendererResult::PASS_ON;
 	float tEnd = transitionEnd(node);
 
-
-	if(manager->loadSurfel(context, node, false)) {
+	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(context, node, false);
+	if(result == SurfelManager::Success) {
 		Mesh* mesh = manager->getSurfel(node);
 		uint32_t maxCount = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
@@ -104,7 +104,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
 	}
 
-	return NodeRendererResult::NODE_HANDLED;
+	if(result == SurfelManager::Pending)
+		return NodeRendererResult::NODE_HANDLED;
+	return NodeRendererResult::PASS_ON;
 }
 
 State* Renderer::clone() const {
