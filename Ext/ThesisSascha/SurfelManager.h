@@ -39,6 +39,10 @@ class Preprocessor;
 class SurfelManager : public Util::ReferenceCounter<SurfelManager> {
 	PROVIDES_TYPE_NAME(SurfelManager)
 public:
+	enum MeshLoadResult_t {
+		Success, Pending, Failed
+	};
+
 	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
 	SurfelManager(const Util::FileName& basePath, uint64_t maxMemory);
 	virtual ~SurfelManager();
@@ -46,12 +50,12 @@ public:
 	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = true);
 	void attachSurfel(Node* node, const SurfelInfo_t& surfelInfo);
 
-	bool loadSurfel(FrameContext& frameContext, Node* node, bool async = true);
+	MeshLoadResult_t loadSurfel(FrameContext& frameContext, Node* node, bool async = true);
 	Rendering::Mesh* getSurfel(Node* node);
 	void disposeSurfel(Node* node);
 
 	void storeMesh(GeometryNode* node, bool async = true);
-	bool loadMesh(GeometryNode* node, bool async = true);
+	MeshLoadResult_t loadMesh(GeometryNode* node, bool async = true);
 
 	void update();
 
