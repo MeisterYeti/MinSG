@@ -56,23 +56,36 @@ namespace ThesisSascha {
 using namespace Rendering;
 using namespace Util;
 
-void forEachNodeBottomUp(Node * root, const std::function<NodeVisitor::status (Node *)>& enterFun, const std::function<void (Node *)>& leaveFun) {
+typedef std::function<NodeVisitor::status (Node *,uint32_t)> VisitNodeStatusFn_t;
+typedef std::function<void (Node *,uint32_t)> VisitNodeFn_t;
+
+void forEachNodeBottomUp(Node * root, const VisitNodeStatusFn_t& enterFun, const VisitNodeFn_t& leaveFun) {
 	if(root == nullptr) {
 		return;
 	}
 	struct Visitor : public NodeVisitor {
-		const std::function<NodeVisitor::status (Node *)>& m_enter;
-		const std::function<void (Node *)>& m_leave;
-		Visitor(const std::function<NodeVisitor::status (Node *)>& p_enter, const std::function<void (Node *)>& p_leave) : m_enter(p_enter), m_leave(p_leave) {
+		const VisitNodeStatusFn_t& m_enter;
+		const VisitNodeFn_t& m_leave;
+		uint32_t level;
+		Visitor(const VisitNodeStatusFn_t& p_enter, const VisitNodeFn_t& p_leave) : m_enter(p_enter), m_leave(p_leave), level(0) {
 		}
 		virtual ~Visitor() = default;
 
 		NodeVisitor::status enter(Node * node) override {
-			return m_enter(node);
+			auto result = m_enter(node, level);
+			auto * groupNode = dynamic_cast<GroupNode *>(node);
+			if(groupNode != nullptr) {
+				++level;
+			}
+			return result;
 		}
 
 		NodeVisitor::status leave(Node * node) override {
-			m_leave(node);
+			auto * groupNode = dynamic_cast<GroupNode *>(node);
+			if(groupNode != nullptr) {
+				--level;
+			}
+			m_leave(node, level);
 			return CONTINUE_TRAVERSAL;
 		}
 	} visitor(enterFun, leaveFun);
@@ -106,9 +119,14 @@ void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worl
 	}
 }
 
-NodeVisitor::status generateId(Node * node) {
+NodeVisitor::status generateId(Node * node, uint32_t level) {
 	if(!node->isAttributeSet(SURFEL_ID)) {
 		node->setAttribute(SURFEL_ID, GenericAttribute::createString(StringUtils::createRandomString(32)));
+	}
+	if(!node->isAttributeSet(NODE_LEVEL)) {
+		node->setAttribute(NODE_LEVEL, GenericAttribute::createNumber(level));
+	} else {
+		dynamic_cast<_NumberAttribute<uint32_t>*>(node->getAttribute(NODE_LEVEL))->set(level);
 	}
 	return NodeVisitor::CONTINUE_TRAVERSAL;
 }
@@ -116,16 +134,15 @@ NodeVisitor::status generateId(Node * node) {
 uint32_t countComplexity(Node * root) {
 	uint32_t complexity = 0;
 	forEachNodeTopDown<Node>(root,[&complexity](Node* node){
-		//TODO: external nodes
+		//TODO: external nodes?
 		complexity += node->isAttributeSet(MESH_COMPLEXITY) ? node->findAttribute(MESH_COMPLEXITY)->toUnsignedInt() : 0;
 	});
 	return complexity;
 }
 
 Preprocessor::Preprocessor(SurfelManager* manager) : verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager), nodeCount(0), processed(0) {
-	prepareNode = generateId;
+	// TODO: parameterize
 	surfelGenerator->setReusalRate(0.9);
-	// do nothing
 }
 
 Preprocessor::~Preprocessor() {
@@ -267,7 +284,7 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 	}
 }
 
-void Preprocessor::visitNode(FrameContext& frameContext, Node* node, bool async) {
+void Preprocessor::visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async) {
 	if(countComplexity(node) > surfelGenerator->getMaxAbsSurfels()) {
 		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 		buildAndStoreSurfels(frameContext, textures, node, async);
@@ -315,14 +332,15 @@ void Preprocessor::initShaders(const FileName& helperShader, const FileName& pos
 }
 
 using std::placeholders::_1;
+using std::placeholders::_2;
 void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
 	{
 		auto nodes = collectNodes(root);
 		processed = 0;
 		nodeCount = nodes.size();
 	}
-	std::function<void(Node*)> visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, async);
-	forEachNodeBottomUp(root, prepareNode, visit);
+	VisitNodeFn_t visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, _2, async);
+	forEachNodeBottomUp(root, generateId, visit);
 }
 
 void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {

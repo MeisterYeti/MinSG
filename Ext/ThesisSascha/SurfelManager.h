@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <list>
 #include <functional>
+#include <deque>
 
 namespace Rendering {
 class Mesh;
@@ -35,6 +36,7 @@ namespace ThesisSascha {
 
 class WorkerThread;
 class Preprocessor;
+class CacheObject;
 
 class SurfelManager : public Util::ReferenceCounter<SurfelManager> {
 	PROVIDES_TYPE_NAME(SurfelManager)
@@ -48,14 +50,14 @@ public:
 	virtual ~SurfelManager();
 
 	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = true);
-	void attachSurfel(Node* node, const SurfelInfo_t& surfelInfo);
-
-	MeshLoadResult_t loadSurfel(FrameContext& frameContext, Node* node, bool async = true);
+	MeshLoadResult_t loadSurfel(Node* node, float projSize, bool async = true);
 	Rendering::Mesh* getSurfel(Node* node);
-	void disposeSurfel(Node* node);
 
 	void storeMesh(GeometryNode* node, bool async = true);
-	MeshLoadResult_t loadMesh(GeometryNode* node, bool async = true);
+	MeshLoadResult_t loadMesh(GeometryNode* node, float projSize, bool async = true);
+	Rendering::Mesh* getMesh(Node* node);
+
+	bool areSurfelsLoaded(Node* node);
 
 	void update();
 
@@ -66,22 +68,26 @@ public:
 
 	void executeAsync(const std::function<void()>& function);
 	void executeOnMainThread(const std::function<void()>& function);
-
-	void updateLRU(Util::StringIdentifier id);
-	void unloadLRU();
 private:
+	void doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async);
+	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, bool async);
+
+	CacheObject* createCacheObject(const Util::StringIdentifier& id);
+	void releaseCacheObject(CacheObject* object);
+
 	Util::FileName basePath;
 	WorkerThread* worker;
-	std::unordered_map<Util::StringIdentifier, Util::Reference<Rendering::Mesh>> surfels;
-	std::unordered_map<Rendering::Mesh*,Util::StringIdentifier> idByMesh;
-	typedef std::list<Util::StringIdentifier> LRUCache_t;
-	LRUCache_t lruCache;
-	typedef std::unordered_map<Util::StringIdentifier, LRUCache_t::iterator> LRUCacheIndex_t;
-	LRUCacheIndex_t lruCacheIndex;
 
 	Util::Reference<Preprocessor> preprocessor;
 	uint64_t maxMemory;
 	uint64_t usedMemory;
+	uint32_t frameNumber;
+
+	typedef std::deque<CacheObject*> SortedCache_t;
+	typedef std::unordered_map<Util::StringIdentifier, CacheObject*> IdToCacheMap_t;
+	SortedCache_t sortedCacheObjects;
+	IdToCacheMap_t idToCacheObject;
+	std::deque<CacheObject*> cacheObjectPool;
 };
 
 } /* namespace ThesisSascha */

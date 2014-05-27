@@ -36,6 +36,10 @@ using namespace Rendering;
 using namespace Util;
 using namespace Util::Concurrency;
 
+/******************************************
+ * helper functions
+ ******************************************/
+
 inline const StringIdentifier getStringId(Node* node, const StringIdentifier& idName, const StringIdentifier& strName) {
 	StringIdentifier id;
 	if(!node->isAttributeSet(strName)) {
@@ -63,6 +67,65 @@ StringIDAttribute_t * unserializeID(const std::pair<std::string, const Util::Gen
 		return nullptr;
 	return new StringIDAttribute_t(StringIdentifier(s.substr(GAStringIdentifierHeader.length())));
 }
+
+inline FileName buildSurfelFilename(const FileName& basePath, const StringIdentifier& id) {
+	FileName file(basePath.toString() + "surfels/");
+	if(!FileUtils::isDir(file))
+		FileUtils::createDir(file, true);
+	file.setFile(id.toString());
+	file.setEnding("mmf");
+	return file;
+}
+
+inline FileName buildMeshFilename(const FileName& basePath, const StringIdentifier& id) {
+	FileName file(basePath.toString() + "meshes/");
+	if(!FileUtils::isDir(file))
+		FileUtils::createDir(file, true);
+	file.setFile(id.toString());
+	file.setEnding("mmf");
+	return file;
+}
+
+/******************************************
+ * CacheObject class
+ ******************************************/
+
+class CacheObject {
+public:
+	StringIdentifier id;
+	uint32_t lru;
+	uint16_t usage;
+	uint16_t level;
+	float projSize;
+	Reference<Mesh> mesh;
+	enum State_t {
+		Empty, Pending, Loaded
+	} state;
+	CacheObject() : id(), lru(0), usage(0), level(0), projSize(0), mesh(), state(Empty) {}
+	CacheObject(const StringIdentifier& id) : id(id), lru(0), usage(0), level(0), projSize(0), mesh(), state(Empty) {}
+
+	//TODO: better priority order
+	bool operator<(const CacheObject & other) const {
+		return projSize < other.projSize || (!(other.projSize < projSize)
+				&& (level > other.level || (!(other.level > level)
+				&& (lru < other.lru || (!(other.lru < lru)
+				&& usage < other.usage)))));
+	}
+	bool operator==(const CacheObject & other) const {
+		return level == other.level
+				&& lru == other.lru
+				&& usage == other.usage
+				&& projSize == other.projSize; // should not be too much of a problem for sorting
+	}
+
+	inline bool isEmpty() { return state == Empty; }
+	inline bool isPending() { return state == Pending; }
+	inline bool isLoaded() { return state == Loaded; }
+};
+
+/******************************************
+ * WorkerThread class
+ ******************************************/
 
 class WorkerThread : public UserThread {
 public:
@@ -166,9 +229,17 @@ void WorkerThread::flush() {
 	}
 }
 
+/******************************************
+ * SurfelManager class
+ ******************************************/
+
 SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory) : basePath(basePath), worker(new WorkerThread(this)),
-		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0) {
+		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), frameNumber(0) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
+	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
+	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
+		cacheObjectPool.push_back(new CacheObject());
+	}
 }
 
 SurfelManager::~SurfelManager() {
@@ -178,7 +249,7 @@ SurfelManager::~SurfelManager() {
 	delete worker;
 }
 
-void SurfelManager::attachSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
+void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async) {
 	if(node->isInstance())
 		node = node->getPrototype();
 	if(!node->isAttributeSet(SURFEL_ID)) {
@@ -186,186 +257,148 @@ void SurfelManager::attachSurfel(Node* node, const SurfelInfo_t& surfelInfo) {
 		node->setAttribute(SURFEL_ID, GenericAttribute::createString(id.toString()));
 		node->setAttribute(SURFEL_STRINGID, new StringIDAttribute_t(id));
 	}
-	//node->setAttribute(SURFELS, new ReferenceAttribute<Mesh>(surfelInfo.first.get()));
 	node->setAttribute(SURFEL_REL_COVERING, GenericAttribute::createNumber(surfelInfo.second));
+	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
+	doStoreMesh(id, buildSurfelFilename(basePath, id), surfelInfo.first.get(), async);
 }
 
-void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async) {
+SurfelManager::MeshLoadResult_t SurfelManager::loadSurfel(Node* node, float projSize, bool async) {
 	if(node->isInstance())
 		node = node->getPrototype();
-	attachSurfel(node, surfelInfo);
-
+	if(!node->isAttributeSet(SURFEL_ID))
+		return Failed;
 	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
-
-	FileName surfelFile(basePath.toString() + "surfels/");
-	if(!FileUtils::isDir(surfelFile))
-		FileUtils::createDir(surfelFile, true);
-	surfelFile.setFile(id.toString());
-	surfelFile.setEnding("mmf");
-
-	if(async) {
-		worker->write(surfelFile, surfelInfo.first.get());
-	} else {
-		std::cout << "saving mesh " << surfelFile.toString() << std::endl;
-		Serialization::saveMesh(surfelInfo.first.get(), surfelFile);
-		FileUtils::flush(surfelFile);
-	}
-	auto it = lruCacheIndex.find(id);
-	if(it != lruCacheIndex.end()) {
-		lruCacheIndex.erase(id);
-		lruCache.erase(it->second);
-	}
-	auto sIt = surfels.find(id);
-	if(sIt != surfels.end()) {
-		if(sIt->second.isNotNull())
-			usedMemory -= sIt->second->getMainMemoryUsage() + sIt->second->getGraphicsMemoryUsage();
-		surfels.erase(sIt);
-	}
+	uint32_t level = node->isAttributeSet(NODE_LEVEL) ? node->findAttribute(NODE_LEVEL)->toUnsignedInt() : 0;
+	return doLoadMesh(id, buildSurfelFilename(basePath, id), level, projSize, async);
 }
 
-SurfelManager::MeshLoadResult_t SurfelManager::loadSurfel(FrameContext& frameContext, Node* node, bool async) {
-	Node* proto = node->isInstance() ? node->getPrototype() : node;
-	if(!proto->isAttributeSet(SURFEL_ID))
-		return Failed;
-
-	const StringIdentifier id = getStringId(proto, SURFEL_ID, SURFEL_STRINGID);
-
-	if(proto->isAttributeSet(SURFELS) || surfels.count(id) > 0)
-		return Success;
-
-	if(usedMemory >= maxMemory) {
-		unloadLRU();
-		return Pending;
+bool SurfelManager::areSurfelsLoaded(Node* node) {
+	if(node->isInstance())
+		node = node->getPrototype();
+	if(!node->isAttributeSet(SURFEL_ID))
+		return false;
+	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
+	auto it = idToCacheObject.find(id);
+	if(it != idToCacheObject.end()) {
+		return it->second->isLoaded();
 	}
-
-	FileName surfelFile(basePath.toString() + "surfels/");
-	if(!FileUtils::isDir(surfelFile))
-		FileUtils::createDir(surfelFile, true);
-	surfelFile.setFile(id.toString());
-	surfelFile.setEnding("mmf");
-
-	// FIXME: Here be Dragons! (infinite loop when surfel file not exist)
-	if(!FileUtils::isFile(surfelFile)) {
-		//preprocessor->updateSurfels(frameContext, node);
-		return Failed;
-	}
-
-	Mesh* mesh = new Mesh();
-	if(async) {
-		worker->read(surfelFile, mesh);
-	} else {
-		std::cout << "loading mesh " << surfelFile << std::endl;
-		mesh = Serialization::loadMesh(surfelFile);
-		//TODO: distinction between main memory and graphics memory
-		usedMemory += mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
-		std::cout << "memory usage: " << usedMemory << "/" << maxMemory << std::endl;
-	}
-	surfels[id] = mesh;
-	updateLRU(id);
-	return Pending;
-}
-
-void SurfelManager::disposeSurfel(Node* node) {
+	return false;
 }
 
 Mesh* SurfelManager::getSurfel(Node* node) {
 	if(node->isInstance())
 		node = node->getPrototype();
-
 	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
-
-	if(surfels.count(id) > 0) {
-		updateLRU(id);
-		return surfels[id].get();
-	}
-	if(node->isAttributeSet(SURFELS)) {
-		Mesh* mesh = node->getAttribute(SURFELS)->toType<ReferenceAttribute<Mesh>>()->get();
-		surfels[id] = mesh;
-		return mesh;
-	}
-	return nullptr;
+	return idToCacheObject.count(id) > 0 ? idToCacheObject[id]->mesh.get() : nullptr;
 }
 
 void SurfelManager::storeMesh(GeometryNode* node, bool async) {
 	if(node->isInstance())
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
-
 	if(!node->isAttributeSet(MESH_ID)) {
 		StringIdentifier id(StringUtils::createRandomString(32));
 		node->setAttribute(MESH_ID, GenericAttribute::createString(id.toString()));
 	}
 	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
-	if(surfels.count(id) > 0)
-		return;
+	doStoreMesh(id, buildMeshFilename(basePath, id), node->getMesh(), async);
+}
 
-	FileName file(basePath.toString() + "meshes/");
-	if(!FileUtils::isDir(file))
-		FileUtils::createDir(file, true);
-	file.setFile(id.toString());
-	file.setEnding("mmf");
+SurfelManager::MeshLoadResult_t SurfelManager::loadMesh(GeometryNode* node, float projSize, bool async) {
+	if(node->isInstance())
+		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
+	if(!node->isAttributeSet(MESH_ID))
+		return Failed;
+	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
+	uint32_t level = node->isAttributeSet(NODE_LEVEL) ? node->findAttribute(NODE_LEVEL)->toUnsignedInt() : 0;
+	return doLoadMesh(id, buildMeshFilename(basePath, id), level, projSize, async);
+}
+
+Mesh* SurfelManager::getMesh(Node* node) {
+	if(node->isInstance())
+		node = node->getPrototype();
+	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
+	return idToCacheObject.count(id) > 0 ? idToCacheObject[id]->mesh.get() : nullptr;
+}
+
+void SurfelManager::doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async) {
+	auto it = idToCacheObject.find(id);
+	CacheObject* object;
+	if(it != idToCacheObject.end()) {
+		object = it->second;
+		// TODO: update memory usage
+		object->state = CacheObject::Empty; // Mark as empty to reload mesh
+	}
 
 	if(async) {
-		worker->write(file, node->getMesh());
+		worker->write(filename, mesh);
 	} else {
-		std::cout << "saving mesh " << file.toString() << std::endl;
-		Serialization::saveMesh(node->getMesh(), file);
-		FileUtils::flush(file);
+		std::cout << "saving mesh " << filename.toString() << " ...";
+		Serialization::saveMesh(mesh, filename);
+		std::cout << "done" << std::endl;
+		FileUtils::flush(filename);
 	}
-	auto it = lruCacheIndex.find(id);
-	if(it != lruCacheIndex.end()) {
-		lruCacheIndex.erase(id);
-		lruCache.erase(it->second);
-	}
-	auto sIt = surfels.find(id);
+
+	//reload mesh
+	/*auto sIt = surfels.find(id);
 	if(sIt != surfels.end()) {
 		if(sIt->second.isNotNull())
 			usedMemory -= sIt->second->getMainMemoryUsage() + sIt->second->getGraphicsMemoryUsage();
 		surfels.erase(sIt);
-	}
+	}*/
 }
 
-SurfelManager::MeshLoadResult_t SurfelManager::loadMesh(GeometryNode* node, bool async) {
-	if(node->isInstance())
-		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
-
-	if(!node->isAttributeSet(MESH_ID)) {
-		return Failed;
+SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, bool async) {
+	auto it = idToCacheObject.find(id);
+	CacheObject* object = nullptr;
+	if(it != idToCacheObject.end()) {
+		object = it->second;
+		object->level = level; //TODO: problematic with instancing. use min level instead?
+		object->projSize = projSize;
+		if(object->lru == frameNumber) {
+			++object->usage;
+		} else {
+			object->usage = 1;
+		}
+		if(object->isLoaded() && object->mesh.isNotNull()) {
+			return Success;
+		} else if(object->isPending()) {
+			return Pending;
+		}
 	}
-	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
-
-	if(surfels.count(id) > 0)
-		return Success;
-
+	if(object == nullptr) {
+		object = createCacheObject(id);
+		object->level = level; //TODO: problematic with instancing. use min level instead?
+		object->usage = 1;
+		object->projSize = projSize;
+		sortedCacheObjects.push_back(object);
+		idToCacheObject[id] = object;
+	}
 	if(usedMemory >= maxMemory) {
-		unloadLRU();
 		return Pending;
 	}
-
-	FileName file(basePath.toString() + "meshes/");
-	if(!FileUtils::isDir(file))
-		FileUtils::createDir(file, true);
-	file.setFile(id.toString());
-	file.setEnding("mmf");
-
-	if(!FileUtils::isFile(file)) {
-		WARN("Mesh file '" + file.toString() + "' does not exist.");
+	// FIXME: Here be Dragons! (infinite loop when surfel file not exist)
+	if(!FileUtils::isFile(filename)) {
+		//preprocessor->updateSurfels(frameContext, node);
 		return Failed;
 	}
 
 	Mesh* mesh;
 	if(async) {
-		mesh = node->getMesh();
-		worker->read(file, mesh);
+		object->mesh = new Mesh();
+		object->state = CacheObject::Pending;
+		worker->read(filename, object->mesh.get());
+		return Pending;
 	} else {
-		std::cout << "loading mesh " << file << std::endl;
-		mesh = Serialization::loadMesh(file);
-		node->setMesh(mesh);
-		usedMemory += mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
+		std::cout << "loading mesh " << filename.toString() << " ..." << std::flush;
+		object->mesh = Serialization::loadMesh(filename);
+		std::cout << "done" << std::endl;
+
+		object->state = CacheObject::Loaded;
+		//TODO: distinction between main memory and graphics memory
+		usedMemory += object->mesh->getMainMemoryUsage() + object->mesh->getGraphicsMemoryUsage();
 		std::cout << "memory usage: " << usedMemory << "/" << maxMemory << std::endl;
+		return Success;
 	}
-	surfels[id] = mesh;
-	updateLRU(id);
-	return Pending;
 }
 
 void SurfelManager::update() {
@@ -374,8 +407,27 @@ void SurfelManager::update() {
 	}
 	while(!worker->swapQueue.empty()) {
 		WorkerThread::MeshSwap_t meshSwap = worker->swapQueue.pop();
+		// TODO: remove old mesh from used memory
 		meshSwap.first->swap(*meshSwap.second.get());
 		usedMemory += meshSwap.first->getMainMemoryUsage() + meshSwap.first->getGraphicsMemoryUsage();
+		// TODO: update cache object state
+	}
+	++frameNumber;
+	//TODO: update lru cache
+	std::sort(sortedCacheObjects.begin(), sortedCacheObjects.end());
+	while(usedMemory > maxMemory) {
+		CacheObject* object = sortedCacheObjects.back();
+		if(object->isPending()) {
+			// object is not loaded yet. We have to wait until it is loaded.
+			sortedCacheObjects.push_front(object);
+			continue;
+		} else if(object->isLoaded() && object->mesh.isNotNull()) {
+			usedMemory -= object->mesh->getMainMemoryUsage() + object->mesh->getGraphicsMemoryUsage();
+		}
+		std::cout << "released " << object->id.toString() << ". memory usage: " << usedMemory << "/" << maxMemory << std::endl;
+		sortedCacheObjects.pop_back();
+		idToCacheObject.erase(object->id);
+		releaseCacheObject(object);
 	}
 }
 
@@ -387,27 +439,24 @@ void SurfelManager::executeOnMainThread(const std::function<void()>& function) {
 	worker->mainThreadQueue.push(function);
 }
 
-void SurfelManager::updateLRU(Util::StringIdentifier id) {
-	auto it = lruCacheIndex.find(id);
-	if(it != lruCacheIndex.end()) {
-		lruCache.erase(it->second);
-	}
-	auto end = lruCache.insert(lruCache.end(), id);
-	lruCacheIndex[id] = end;
+CacheObject* SurfelManager::createCacheObject(const Util::StringIdentifier& id) {
+	if(cacheObjectPool.empty())
+		return new CacheObject(id); //TODO: allocate space for multiple objects?
+	CacheObject* object = cacheObjectPool.back();
+	cacheObjectPool.pop_back();
+	object->id = id;
+	return object;
 }
 
-void SurfelManager::unloadLRU() {
-	auto id = lruCache.front();
-	lruCache.pop_front();
-	lruCacheIndex.erase(id);
-
-	auto sIt = surfels.find(id);
-	if(sIt != surfels.end()) {
-		if(sIt->second.isNotNull())
-			usedMemory -= sIt->second->getMainMemoryUsage() + sIt->second->getGraphicsMemoryUsage();
-		surfels.erase(sIt);
-	}
-	std::cout << "unload " << id.toString() << ", memory usage: " << usedMemory << "/" << maxMemory << std::endl;
+void SurfelManager::releaseCacheObject(CacheObject* object) {
+	//std::cout << "releasing cache object " << object->id.toString() << std::endl;
+	//TODO: check for max. pool size
+	cacheObjectPool.push_back(object);
+	object->state = CacheObject::Empty;
+	object->level = 0;
+	object->lru = 0;
+	object->usage = 0;
+	object->mesh = nullptr;
 }
 
 } /* namespace ThesisSascha */
