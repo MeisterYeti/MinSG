@@ -10,10 +10,12 @@
 #ifdef MINSG_EXT_THESISSASCHA
 #include "Renderer.h"
 #include "SurfelManager.h"
+#include "Definitions.h"
 
 #include <MinSG/Core/Nodes/GeometryNode.h>
 #include <MinSG/Core/Nodes/ListNode.h>
 #include <MinSG/Core/RenderParam.h>
+#include <MinSG/Helper/StdNodeVisitors.h>
 
 #include <Rendering/Mesh/Mesh.h>
 #include <Rendering/RenderingContext/RenderingContext.h>
@@ -24,6 +26,7 @@
 #include <Util/StringIdentifier.h>
 #include <Util/GenericAttribute.h>
 
+#include <deque>
 #include <string>
 
 #define MAX_POINT_SIZE 32
@@ -32,8 +35,6 @@ namespace MinSG {
 namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
-
-static const StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 
 Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel) {
 	transitionStart = [] (Node*) { return 200; };
@@ -51,9 +52,31 @@ inline T clamp(T value, T min, T max) {
 }
 
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+	static Mesh* tmpMesh = new Mesh();
+	Geometry::Rect projectedRect(context.getProjectedRect(node));
+	float size = projectedRect.getArea();
+	float qSize = std::sqrt(size);
+
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
 	if(geometry != nullptr) {
-		manager->loadMesh(geometry, false);
+		SurfelManager::MeshLoadResult_t result = manager->loadMesh(geometry, qSize, false);
+		if(result == SurfelManager::Success) {
+			Mesh* mesh = manager->getMesh(node);
+			if(mesh == nullptr) {
+				WARN("Empty mesh found! " + node->findAttribute(MESH_ID)->toString());
+				//return NodeRendererResult::PASS_ON;
+			}
+			/*RenderingContext& rc = context.getRenderingContext();
+			rc.pushMatrix();
+			rc.resetMatrix();
+			rc.multMatrix(node->getWorldMatrix());
+			context.displayMesh(mesh);
+			rc.popMatrix();*/
+			geometry->setMesh(mesh);
+			//return NodeRendererResult::PASS_ON;
+		} else {
+			geometry->setMesh(tmpMesh);
+		}
 	}
 	// calculate treshold
 	// if below threshold
@@ -66,17 +89,29 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	//   else
 	//     draw surfels
 
+
+	//TODO: only pass on when children are loaded
+	GroupNode* grpNode = dynamic_cast<GroupNode*>(node);
+	bool childrenLoaded = false;
+	if(grpNode != nullptr) {
+		std::deque<Node*> children = getChildNodes(grpNode);
+		for(auto it = children.begin(); it != children.end() && !childrenLoaded; ++it) {
+			childrenLoaded |= manager->areSurfelsLoaded(*it);
+		}
+	}
+
 	float tStart = transitionStart(node);
-	Geometry::Rect projectedRect(context.getProjectedRect(node));
-	float size = projectedRect.getArea();
-	float qSize = std::sqrt(size);
-	if(qSize > tStart)
+	if(qSize > tStart && childrenLoaded)
 		return NodeRendererResult::PASS_ON;
 	float tEnd = transitionEnd(node);
 
-	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(context, node, false);
+	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(node, qSize, false);
 	if(result == SurfelManager::Success) {
 		Mesh* mesh = manager->getSurfel(node);
+		if(mesh == nullptr) {
+			WARN("Empty surfel mesh found! " + node->findAttribute(SURFEL_ID)->toString());
+			return NodeRendererResult::PASS_ON;
+		}
 		uint32_t maxCount = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();

@@ -60,12 +60,11 @@ public:
 
 	void updateSurfels(FrameContext& frameContext, Node* node, float coverage=1.0f, bool async = true);
 
-	void setPrepareNodeFn(const std::function<NodeVisitor::status(Node*)>& function) { this->prepareNode = function; }
 	void setAbortUpdateFn(const std::function<bool(Node*,float)> & function) { this->abortUpdate = function; }
 private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
-	void visitNode(FrameContext& frameContext, Node* node, bool async);
+	void visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async);
 
 	std::vector<Util::Reference<Rendering::Shader> > shaders;
 	std::vector<Util::Reference<MinSG::CameraNodeOrtho> > cameras;
@@ -77,7 +76,6 @@ private:
 	BlueSurfels::SurfelGenerator* surfelGenerator;
 	Util::WeakPointer<SurfelManager> manager;
 
-	std::function<NodeVisitor::status(Node*)> prepareNode;
 	std::function<bool(Node*,float)> abortUpdate;
 
 	uint32_t processed;
