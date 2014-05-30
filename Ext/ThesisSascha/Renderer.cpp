@@ -29,7 +29,7 @@
 #include <deque>
 #include <string>
 
-#define MAX_POINT_SIZE 32
+#define MAX_POINT_SIZE 64
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -66,16 +66,27 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 				WARN("Empty mesh found! " + node->findAttribute(MESH_ID)->toString());
 				//return NodeRendererResult::PASS_ON;
 			}
-			/*RenderingContext& rc = context.getRenderingContext();
+			if(geometry->hasStates() && !(rp.getFlag(NO_STATES))) {
+				for(auto & stateEntry : geometry->getStates()) {
+					const State::stateResult_t result = stateEntry->enableState(context, geometry, rp);
+				}
+			}
+
+			RenderingContext& rc = context.getRenderingContext();
 			rc.pushMatrix();
 			rc.resetMatrix();
 			rc.multMatrix(node->getWorldMatrix());
 			context.displayMesh(mesh);
-			rc.popMatrix();*/
-			geometry->setMesh(mesh);
+			rc.popMatrix();
+			//geometry->setMesh(mesh);
 			//return NodeRendererResult::PASS_ON;
+			if(geometry->hasStates() && !(rp.getFlag(NO_STATES))) {
+				for(auto & stateEntry : geometry->getStates()) {
+					stateEntry->disableState(context, geometry, rp);
+				}
+			}
 		} else {
-			geometry->setMesh(tmpMesh);
+			//geometry->setMesh(tmpMesh);
 		}
 	}
 	// calculate treshold
@@ -93,20 +104,24 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	//TODO: only pass on when children are loaded
 	GroupNode* grpNode = dynamic_cast<GroupNode*>(node);
 	bool childrenLoaded = false;
+	bool allChildrenLoaded = true;
 	if(grpNode != nullptr) {
 		std::deque<Node*> children = getChildNodes(grpNode);
+		bool tmp;
 		for(auto it = children.begin(); it != children.end() && !childrenLoaded; ++it) {
-			childrenLoaded |= manager->areSurfelsLoaded(*it);
+			tmp = manager->isCached(*it);;
+			allChildrenLoaded &= tmp;
+			childrenLoaded |= tmp;
 		}
 	}
 
 	float tStart = transitionStart(node);
-	if(qSize > tStart && childrenLoaded)
+	if(qSize > tStart && allChildrenLoaded)
 		return NodeRendererResult::PASS_ON;
 	float tEnd = transitionEnd(node);
 
 	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(node, qSize, false);
-	if(result == SurfelManager::Success) {
+	if(result == SurfelManager::Success ) {
 		Mesh* mesh = manager->getSurfel(node);
 		if(mesh == nullptr) {
 			WARN("Empty surfel mesh found! " + node->findAttribute(SURFEL_ID)->toString());
@@ -118,14 +133,6 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 
 		uint32_t count = clamp<uint32_t>(countFn(node, size, maxCount, relCovering), 1, maxCount);
 		float pSize = clamp<float>(sizeFn(node, size, maxCount, relCovering), 1, MAX_POINT_SIZE);
-		if(qSize>tEnd && tStart>tEnd){
-			pSize *= (tStart-qSize) / (tStart-tEnd);
-			pSize = clamp<float>(pSize,1,MAX_POINT_SIZE);
-		}
-		if(qSize>tEnd && tStart>tEnd){
-			count *= (tStart-qSize) / (tStart-tEnd);
-			count = clamp<uint32_t>(count,1,maxCount);
-		}
 
 		RenderingContext& rc = context.getRenderingContext();
 		rc.pushAndSetPointParameters(PointParameters(pSize, false));
@@ -137,6 +144,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		rc.popPointParameters();
 
 		return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
+		//return NodeRendererResult::PASS_ON;
 	}
 
 	if(result == SurfelManager::Pending)

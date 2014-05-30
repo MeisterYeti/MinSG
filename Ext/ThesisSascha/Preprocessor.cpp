@@ -360,6 +360,13 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float c
 	}
 }
 
+Rendering::Mesh* Preprocessor::combineSurfelMeshes(const std::vector<SurfelInfo_t>& meshes, uint32_t targetSize) {
+	for(auto sInfo : meshes) {
+		//VertexDescription vd = sInfo.first->getVertexDescription();
+
+	}
+}
+
 } /* namespace ThesisSascha */
 } /* namespace MinSG */
 
