@@ -57,7 +57,7 @@ public:
 	MeshLoadResult_t loadMesh(GeometryNode* node, float projSize, bool async = true);
 	Rendering::Mesh* getMesh(Node* node);
 
-	bool areSurfelsLoaded(Node* node);
+	bool isCached(Node* node);
 
 	void update();
 

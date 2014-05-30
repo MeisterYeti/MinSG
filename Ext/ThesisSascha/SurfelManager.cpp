@@ -106,15 +106,18 @@ public:
 
 	//TODO: better priority order
 	bool operator<(const CacheObject & other) const {
-		return projSize < other.projSize || (!(other.projSize < projSize)
-				&& (level > other.level || (!(other.level > level)
+		return (state == Empty) || (state == Loaded && other.state == Pending) || ((other.state != Empty)
+				//&& (level < other.level || (!(other.level < level)
 				&& (lru < other.lru || (!(other.lru < lru)
-				&& usage < other.usage)))));
+				&& (projSize < other.projSize || (!(other.projSize < projSize)
+				&& usage < other.usage))
+				)));
 	}
 	bool operator==(const CacheObject & other) const {
 		return level == other.level
 				&& lru == other.lru
 				&& usage == other.usage
+				&& state == other.state
 				&& projSize == other.projSize; // should not be too much of a problem for sorting
 	}
 
@@ -272,15 +275,24 @@ SurfelManager::MeshLoadResult_t SurfelManager::loadSurfel(Node* node, float proj
 	return doLoadMesh(id, buildSurfelFilename(basePath, id), level, projSize, async);
 }
 
-bool SurfelManager::areSurfelsLoaded(Node* node) {
+bool SurfelManager::isCached(Node* node) {
 	if(node->isInstance())
 		node = node->getPrototype();
-	if(!node->isAttributeSet(SURFEL_ID))
-		return false;
-	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
-	auto it = idToCacheObject.find(id);
-	if(it != idToCacheObject.end()) {
-		return it->second->isLoaded();
+	if(!node->isAttributeSet(SURFEL_ID) && !node->isAttributeSet(MESH_ID))
+		return true; // return true because there might be surfels in the subtree
+	if(node->isAttributeSet(SURFEL_ID)) {
+		const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
+		auto it = idToCacheObject.find(id);
+		if(it != idToCacheObject.end()) {
+			return it->second->isLoaded();
+		}
+	}
+	if(node->isAttributeSet(MESH_ID)) {
+		const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
+		auto it = idToCacheObject.find(id);
+		if(it != idToCacheObject.end()) {
+			return it->second->isLoaded();
+		}
 	}
 	return false;
 }
@@ -370,7 +382,7 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIden
 		object->level = level; //TODO: problematic with instancing. use min level instead?
 		object->usage = 1;
 		object->projSize = projSize;
-		sortedCacheObjects.push_back(object);
+		sortedCacheObjects.push_front(object);
 		idToCacheObject[id] = object;
 	}
 	if(usedMemory >= maxMemory) {
@@ -416,16 +428,16 @@ void SurfelManager::update() {
 	//TODO: update lru cache
 	std::sort(sortedCacheObjects.begin(), sortedCacheObjects.end());
 	while(usedMemory > maxMemory) {
-		CacheObject* object = sortedCacheObjects.back();
+		CacheObject* object = sortedCacheObjects.front();
 		if(object->isPending()) {
 			// object is not loaded yet. We have to wait until it is loaded.
-			sortedCacheObjects.push_front(object);
+			sortedCacheObjects.push_back(object);
 			continue;
 		} else if(object->isLoaded() && object->mesh.isNotNull()) {
 			usedMemory -= object->mesh->getMainMemoryUsage() + object->mesh->getGraphicsMemoryUsage();
 		}
 		std::cout << "released " << object->id.toString() << ". memory usage: " << usedMemory << "/" << maxMemory << std::endl;
-		sortedCacheObjects.pop_back();
+		sortedCacheObjects.pop_front();
 		idToCacheObject.erase(object->id);
 		releaseCacheObject(object);
 	}

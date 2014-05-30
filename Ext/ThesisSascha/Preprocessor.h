@@ -65,6 +65,7 @@ private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
 	void visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async);
+	Rendering::Mesh* combineSurfelMeshes(const std::vector<SurfelInfo_t>& meshes, uint32_t targetSize);
 
 	std::vector<Util::Reference<Rendering::Shader> > shaders;
 	std::vector<Util::Reference<MinSG::CameraNodeOrtho> > cameras;
