@@ -36,11 +36,10 @@ namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
 
-Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel) {
-	transitionStart = [] (Node*) { return 200; };
-	transitionEnd = [] (Node*) { return 100; };
+Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false), immediate(false) {
 	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
+	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
 }
 
 Renderer::~Renderer() {
@@ -52,14 +51,44 @@ inline T clamp(T value, T min, T max) {
 }
 
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+	RefineNode_t result = refineNodeFn(node);
+	switch (result) {
+		case RefineNode_t::RefineAndSkip:
+			if(dynamic_cast<GeometryNode*>(node) != nullptr) {
+				if(immediate)
+					doDisplayNode(context, node, rp);
+				else
+					activeNodes.push_back(node);
+			}
+			return NodeRendererResult::PASS_ON;
+		case RefineNode_t::RefineAndContinue:
+			if(immediate)
+				doDisplayNode(context, node, rp);
+			else
+				activeNodes.push_back(node);
+			return NodeRendererResult::PASS_ON;
+		case RefineNode_t::SkipChildren:
+			if(immediate)
+				doDisplayNode(context, node, rp);
+			else
+				activeNodes.push_back(node);
+			return NodeRendererResult::NODE_HANDLED;
+		default:
+			break;
+	}
+	return NodeRendererResult::NODE_HANDLED;
+}
+
+NodeRendererResult Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderParam& rp) {
 	static Mesh* tmpMesh = new Mesh();
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = std::sqrt(size);
+	float distance = node->getWorldBB().getDistanceSquared(context.getCamera()->getWorldPosition());
 
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
 	if(geometry != nullptr) {
-		SurfelManager::MeshLoadResult_t result = manager->loadMesh(geometry, qSize, false);
+		SurfelManager::MeshLoadResult_t result = manager->loadMesh(geometry, qSize, distance, async);
 		if(result == SurfelManager::Success) {
 			Mesh* mesh = manager->getMesh(node);
 			if(mesh == nullptr) {
@@ -79,15 +108,16 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 			context.displayMesh(mesh);
 			rc.popMatrix();
 			//geometry->setMesh(mesh);
-			//return NodeRendererResult::PASS_ON;
 			if(geometry->hasStates() && !(rp.getFlag(NO_STATES))) {
 				for(auto & stateEntry : geometry->getStates()) {
 					stateEntry->disableState(context, geometry, rp);
 				}
 			}
+			return NodeRendererResult::PASS_ON;
 		} else {
 			//geometry->setMesh(tmpMesh);
 		}
+		return NodeRendererResult::PASS_ON;
 	}
 	// calculate treshold
 	// if below threshold
@@ -102,7 +132,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 
 
 	//TODO: only pass on when children are loaded
-	GroupNode* grpNode = dynamic_cast<GroupNode*>(node);
+	/*GroupNode* grpNode = dynamic_cast<GroupNode*>(node);
 	bool childrenLoaded = false;
 	bool allChildrenLoaded = true;
 	if(grpNode != nullptr) {
@@ -113,14 +143,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 			allChildrenLoaded &= tmp;
 			childrenLoaded |= tmp;
 		}
-	}
+	}*/
 
-	float tStart = transitionStart(node);
-	if(qSize > tStart && allChildrenLoaded)
-		return NodeRendererResult::PASS_ON;
-	float tEnd = transitionEnd(node);
-
-	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(node, qSize, false);
+	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(node, qSize, distance, async);
 	if(result == SurfelManager::Success ) {
 		Mesh* mesh = manager->getSurfel(node);
 		if(mesh == nullptr) {
@@ -132,7 +157,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
 		uint32_t count = clamp<uint32_t>(countFn(node, size, maxCount, relCovering), 1, maxCount);
-		float pSize = clamp<float>(sizeFn(node, size, maxCount, relCovering), 1, MAX_POINT_SIZE);
+		float pSize = sizeFn(node, size, maxCount, relCovering);
+		if(pSize < 1)
+			pSize = 1;
 
 		RenderingContext& rc = context.getRenderingContext();
 		rc.pushAndSetPointParameters(PointParameters(pSize, false));
@@ -143,7 +170,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		rc.popMatrix();
 		rc.popPointParameters();
 
-		return qSize<tEnd ? NodeRendererResult::NODE_HANDLED : NodeRendererResult::PASS_ON;
+		return NodeRendererResult::NODE_HANDLED;
 		//return NodeRendererResult::PASS_ON;
 	}
 
@@ -154,6 +181,14 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 
 State* Renderer::clone() const {
 	return new Renderer(manager.get(), this->getSourceChannel());
+}
+
+void Renderer::doDisableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	NodeRendererState::doDisableState(context, node, rp);
+	for(auto activeNode : activeNodes) {
+		doDisplayNode(context, activeNode.get(), rp);
+	}
+	activeNodes.clear();
 }
 
 } /* namespace ThesisSascha */
