@@ -49,12 +49,12 @@ public:
 	SurfelManager(const Util::FileName& basePath, uint64_t maxMemory);
 	virtual ~SurfelManager();
 
-	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = true);
-	MeshLoadResult_t loadSurfel(Node* node, float projSize, bool async = true);
+	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = false);
+	MeshLoadResult_t loadSurfel(Node* node, float projSize, float distance, bool async = false);
 	Rendering::Mesh* getSurfel(Node* node);
 
 	void storeMesh(GeometryNode* node, bool async = true);
-	MeshLoadResult_t loadMesh(GeometryNode* node, float projSize, bool async = true);
+	MeshLoadResult_t loadMesh(GeometryNode* node, float projSize, float distance, bool async = false);
 	Rendering::Mesh* getMesh(Node* node);
 
 	bool isCached(Node* node);
@@ -70,7 +70,7 @@ public:
 	void executeOnMainThread(const std::function<void()>& function);
 private:
 	void doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async);
-	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, bool async);
+	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, float distance, bool async);
 
 	CacheObject* createCacheObject(const Util::StringIdentifier& id);
 	void releaseCacheObject(CacheObject* object);
@@ -83,9 +83,10 @@ private:
 	uint64_t usedMemory;
 	uint32_t frameNumber;
 
-	typedef std::deque<CacheObject*> SortedCache_t;
+	typedef std::vector<CacheObject*> SortedCache_t;
 	typedef std::unordered_map<Util::StringIdentifier, CacheObject*> IdToCacheMap_t;
 	SortedCache_t sortedCacheObjects;
+	SortedCache_t cacheObjectBuffer;
 	IdToCacheMap_t idToCacheObject;
 	std::deque<CacheObject*> cacheObjectPool;
 };
