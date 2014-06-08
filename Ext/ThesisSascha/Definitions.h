@@ -18,7 +18,7 @@
 namespace MinSG {
 namespace ThesisSascha {
 
-static const uint32_t MAX_JOB_NUMBER = 10;
+static const uint32_t MAX_JOB_NUMBER = 100;
 static const size_t INITIAL_POOL_SIZE = 200;
 
 typedef Util::WrapperAttribute<Util::StringIdentifier> StringIDAttribute_t;

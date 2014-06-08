@@ -25,6 +25,7 @@
 
 #include <Util/StringIdentifier.h>
 #include <Util/GenericAttribute.h>
+#include <Util/Timer.h>
 
 #include <deque>
 #include <string>
@@ -36,13 +37,10 @@ namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
 
-Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false), immediate(false) {
+Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false), immediate(false), timeLimit(0) {
 	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
-}
-
-Renderer::~Renderer() {
 }
 
 template<typename T>
@@ -58,20 +56,23 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 				if(immediate)
 					doDisplayNode(context, node, rp);
 				else
-					activeNodes.push_back(node);
+					activeNodes->insert(node);
+					//activeNodes.push_back(node);
 			}
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::RefineAndContinue:
 			if(immediate)
 				doDisplayNode(context, node, rp);
 			else
-				activeNodes.push_back(node);
+				activeNodes->insert(node);
+				//activeNodes.push_back(node);
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::SkipChildren:
 			if(immediate)
 				doDisplayNode(context, node, rp);
 			else
-				activeNodes.push_back(node);
+				activeNodes->insert(node);
+				//activeNodes.push_back(node);
 			return NodeRendererResult::NODE_HANDLED;
 		default:
 			break;
@@ -93,7 +94,7 @@ NodeRendererResult Renderer::doDisplayNode(FrameContext& context, Node* node, co
 			Mesh* mesh = manager->getMesh(node);
 			if(mesh == nullptr) {
 				WARN("Empty mesh found! " + node->findAttribute(MESH_ID)->toString());
-				//return NodeRendererResult::PASS_ON;
+				return NodeRendererResult::PASS_ON;
 			}
 			if(geometry->hasStates() && !(rp.getFlag(NO_STATES))) {
 				for(auto & stateEntry : geometry->getStates()) {
@@ -183,12 +184,26 @@ State* Renderer::clone() const {
 	return new Renderer(manager.get(), this->getSourceChannel());
 }
 
+State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	activeNodes.reset(new DistanceSetF2B<Node>(context.getCamera()->getWorldPosition()));
+	return NodeRendererState::doEnableState(context, node, rp);
+}
+
 void Renderer::doDisableState(FrameContext & context, Node * node, const RenderParam & rp) {
 	NodeRendererState::doDisableState(context, node, rp);
-	for(auto activeNode : activeNodes) {
-		doDisplayNode(context, activeNode.get(), rp);
+	static Util::Timer timer;
+
+	const DistanceSetF2B<Node> tempNodes = std::move(*activeNodes);
+	activeNodes.reset();
+
+	timer.reset();
+	//TODO: limit frame time
+	for(auto & activeNode : tempNodes) {
+		if(timeLimit > 0 && timer.getMilliseconds() > timeLimit)
+			return;
+		doDisplayNode(context, activeNode, rp);
 	}
-	activeNodes.clear();
+	//activeNodes.clear();
 }
 
 } /* namespace ThesisSascha */
