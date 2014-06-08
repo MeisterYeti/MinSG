@@ -68,12 +68,19 @@ public:
 
 	void executeAsync(const std::function<void()>& function);
 	void executeOnMainThread(const std::function<void()>& function);
+
+	uint64_t getUsedMemory() const { return usedMemory; }
+	uint64_t getMaxMemory() const { return maxMemory; }
+	void setMaxJobs(uint32_t jobs)  { maxJobNumber = jobs; }
+	uint32_t getMaxJobs() const { return maxJobNumber; }
 private:
 	void doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async);
 	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, float distance, bool async);
 
 	CacheObject* createCacheObject(const Util::StringIdentifier& id);
+	CacheObject* createCacheObject(const CacheObject* copyOf);
 	void releaseCacheObject(CacheObject* object);
+	CacheObject* getCacheObject(const Util::StringIdentifier& id) const;
 
 	Util::FileName basePath;
 	WorkerThread* worker;
@@ -82,11 +89,13 @@ private:
 	uint64_t maxMemory;
 	uint64_t usedMemory;
 	uint32_t frameNumber;
+	uint32_t maxJobNumber;
 
 	typedef std::vector<CacheObject*> SortedCache_t;
 	typedef std::unordered_map<Util::StringIdentifier, CacheObject*> IdToCacheMap_t;
 	SortedCache_t sortedCacheObjects;
 	SortedCache_t cacheObjectBuffer;
+	SortedCache_t updatedCacheObjects;
 	IdToCacheMap_t idToCacheObject;
 	std::deque<CacheObject*> cacheObjectPool;
 };
