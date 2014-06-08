@@ -13,6 +13,7 @@
 
 #include <MinSG/Core/States/NodeRendererState.h>
 #include <MinSG/Core/FrameContext.h>
+#include <MinSG/Helper/DistanceSorting.h>
 
 #include <Util/References.h>
 #include <Util/ReferenceCounter.h>
@@ -38,7 +39,7 @@ public:
 	typedef std::function<RefineNode_t(Node*)> RefineNodeFn_t;
 
 	Renderer(SurfelManager* manager, Util::StringIdentifier channel = FrameContext::DEFAULT_CHANNEL);
-	virtual ~Renderer();
+	virtual ~Renderer() = default;
 
 	virtual NodeRendererResult displayNode(FrameContext & context, Node * node, const RenderParam & rp);
 
@@ -51,7 +52,10 @@ public:
 	bool isAsync() { return this->async; };
 	void setImmediate(bool immediate) { this->immediate = immediate; };
 	bool isImmediate() { return this->immediate; };
+	void setTimeLimit(uint32_t time) { this->timeLimit = time; };
+	uint32_t getTimeLimit() { return this->timeLimit; };
 protected:
+	stateResult_t doEnableState(FrameContext & context, Node *, const RenderParam & rp) override;
 	void doDisableState(FrameContext & context, Node * node, const RenderParam & rp) override;
 	NodeRendererResult doDisplayNode(FrameContext & context, Node * node, const RenderParam & rp);
 private:
@@ -62,9 +66,11 @@ private:
 	RefineNodeFn_t refineNodeFn;
 
 	typedef std::vector<Util::Reference<Node>> NodeList_t;
-	NodeList_t activeNodes;
+	//NodeList_t activeNodes;
+	std::unique_ptr<DistanceSetF2B<Node>> activeNodes;
 	bool async;
 	bool immediate;
+	uint32_t timeLimit;
 };
 
 } /* namespace ThesisSascha */
