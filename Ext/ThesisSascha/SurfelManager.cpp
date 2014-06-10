@@ -94,6 +94,14 @@ inline FileName buildMeshFilename(const FileName& basePath, const StringIdentifi
 
 class CacheObject {
 public:
+	enum Priority {
+		LRU, Usage, Distance, ProjSize, LevelTB, LevelBT, Memory
+	};
+
+	typedef std::function<bool(const CacheObject & a, const CacheObject & b)> CompareFn_t;
+	static std::vector<CompareFn_t> priorityFunctions;
+	static std::vector<uint32_t> priorityOrder;
+
 	StringIdentifier id;
 	uint32_t lru;
 	uint16_t usage;
@@ -110,7 +118,7 @@ public:
 
 	//TODO: better priority order
 	bool operator < (const CacheObject & other) const {
-		return //(state == Empty) || (state == Loaded && other.state == Pending) || ((other.state != Empty)
+		/*return //(state == Empty) || (state == Loaded && other.state == Pending) || ((other.state != Empty)
 				//state < other.state || (!(other.state < state)
 				(true
 				&& (lru < other.lru || (!(other.lru < lru)
@@ -118,7 +126,16 @@ public:
 				//&& (level < other.level || (!(other.level < level)
 				&& (projSize < other.projSize || (!(other.projSize < projSize)
 				&& usage < other.usage))
-				)))));
+				)))));*/
+		for(uint32_t p : priorityOrder) {
+			CompareFn_t fn = priorityFunctions[p];
+			if(fn(*this,other)) {
+				return true;
+			} else if(fn(other,*this)) {
+				return false;
+			}
+		}
+		return false;
 	}
 	bool operator == (const CacheObject & other) const {
 		return level == other.level
@@ -145,6 +162,21 @@ public:
 		std::swap(this->mesh, obj->mesh);
 		std::swap(this->memory, obj->memory);
 	}
+
+};
+
+std::vector<CacheObject::CompareFn_t> CacheObject::priorityFunctions {
+	[](const CacheObject & a, const CacheObject & b) { return a.lru < b.lru; },
+	[](const CacheObject & a, const CacheObject & b) { return a.usage < b.usage; },
+	[](const CacheObject & a, const CacheObject & b) { return a.minDistance > b.minDistance; },
+	[](const CacheObject & a, const CacheObject & b) { return a.projSize < b.projSize; },
+	[](const CacheObject & a, const CacheObject & b) { return a.level > b.level; },
+	[](const CacheObject & a, const CacheObject & b) { return a.level < b.level; },
+	[](const CacheObject & a, const CacheObject & b) { return a.memory < b.memory; }
+};
+
+std::vector<uint32_t> CacheObject::priorityOrder {
+	CacheObject::LRU, CacheObject::Distance, CacheObject::ProjSize, CacheObject::Usage
 };
 
 struct CacheObjectCompare {
@@ -229,7 +261,7 @@ void WorkerThread::flush() {
  ******************************************/
 
 SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory) : basePath(basePath), worker(new WorkerThread(this)),
-		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), frameNumber(0), maxJobNumber(MAX_JOB_NUMBER) {
+		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), memoryLoadFactor(0.8f) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
 	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
@@ -466,7 +498,7 @@ void SurfelManager::update() {
 				releaseCacheObject(object);
 			} else if(object->isAborted()) {
 				// do nothing
-			} else if(usedMemory > maxMemory * 0.8f) {
+			} else if(usedMemory > maxMemory * memoryLoadFactor) {
 				usedMemory -= object->memory;
 				//std::cout << "released " << object->id.toString() << ". memory usage: " << usedMemory << "/" << maxMemory << std::endl;
 				if(object->isPending()) {
@@ -547,6 +579,11 @@ CacheObject* SurfelManager::getCacheObject(const Util::StringIdentifier& id) con
 	if(it == idToCacheObject.end())
 		return nullptr;
 	return it->second;
+}
+
+void SurfelManager::setPriorityOrder(const std::vector<uint32_t>& order) {
+	// TODO: check bounds
+	CacheObject::priorityOrder = order;
 }
 
 } /* namespace ThesisSascha */

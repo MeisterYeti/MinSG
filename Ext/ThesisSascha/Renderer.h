@@ -18,6 +18,7 @@
 #include <Util/References.h>
 #include <Util/ReferenceCounter.h>
 #include <Util/TypeNameMacro.h>
+#include <Util/Timer.h>
 
 #include <functional>
 #include <vector>
@@ -48,12 +49,14 @@ public:
 	void setCountFn(const std::function<uint32_t(Node*,float,uint32_t,float)>& function) { countFn = function; }
 	void setSizeFn(const std::function<float(Node*,float,uint32_t,float)>& function) { sizeFn = function; }
 	void setRefineFn(const RefineNodeFn_t& function) { refineNodeFn = function; }
-	void setAsync(bool async) { this->async = async; };
-	bool isAsync() { return this->async; };
-	void setImmediate(bool immediate) { this->immediate = immediate; };
-	bool isImmediate() { return this->immediate; };
-	void setTimeLimit(uint32_t time) { this->timeLimit = time; };
-	uint32_t getTimeLimit() { return this->timeLimit; };
+	void setAsync(bool async) { this->async = async; }
+	bool isAsync() { return this->async; }
+	void setImmediate(bool immediate) { this->immediate = immediate; }
+	bool isImmediate() { return this->immediate; }
+	void setTimeLimit(uint32_t time) { this->timeLimit = time; }
+	uint32_t getTimeLimit() { return this->timeLimit; }
+	float getDebugTime() const { return debugTimer.getMilliseconds(); }
+	float getFrameTime() const { return frameTimer.getMilliseconds(); }
 protected:
 	stateResult_t doEnableState(FrameContext & context, Node *, const RenderParam & rp) override;
 	void doDisableState(FrameContext & context, Node * node, const RenderParam & rp) override;
@@ -71,6 +74,8 @@ private:
 	bool async;
 	bool immediate;
 	uint32_t timeLimit;
+	Util::Timer frameTimer;
+	Util::Timer debugTimer;
 };
 
 } /* namespace ThesisSascha */
