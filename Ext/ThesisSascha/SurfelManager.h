@@ -71,8 +71,13 @@ public:
 
 	uint64_t getUsedMemory() const { return usedMemory; }
 	uint64_t getMaxMemory() const { return maxMemory; }
+	void setMaxMemory(uint64_t value) { maxMemory = value; }
 	void setMaxJobs(uint32_t jobs)  { maxJobNumber = jobs; }
 	uint32_t getMaxJobs() const { return maxJobNumber; }
+	void setMemoryLoadFactor(float value)  { memoryLoadFactor = value; }
+	float getMemoryLoadFactor() const { return memoryLoadFactor; }
+
+	void setPriorityOrder(const std::vector<uint32_t>& order);
 private:
 	void doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async);
 	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, float distance, bool async);
@@ -90,6 +95,7 @@ private:
 	uint64_t usedMemory;
 	uint32_t frameNumber;
 	uint32_t maxJobNumber;
+	float memoryLoadFactor;
 
 	typedef std::vector<CacheObject*> SortedCache_t;
 	typedef std::unordered_map<Util::StringIdentifier, CacheObject*> IdToCacheMap_t;

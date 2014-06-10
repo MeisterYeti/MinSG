@@ -25,7 +25,6 @@
 
 #include <Util/StringIdentifier.h>
 #include <Util/GenericAttribute.h>
-#include <Util/Timer.h>
 
 #include <deque>
 #include <string>
@@ -49,6 +48,8 @@ inline T clamp(T value, T min, T max) {
 }
 
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+	if(immediate && timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
+		return NodeRendererResult::NODE_HANDLED;
 	RefineNode_t result = refineNodeFn(node);
 	switch (result) {
 		case RefineNode_t::RefineAndSkip:
@@ -185,21 +186,25 @@ State* Renderer::clone() const {
 }
 
 State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	frameTimer.reset();
+	debugTimer.reset();
 	activeNodes.reset(new DistanceSetF2B<Node>(context.getCamera()->getWorldPosition()));
 	return NodeRendererState::doEnableState(context, node, rp);
 }
 
 void Renderer::doDisableState(FrameContext & context, Node * node, const RenderParam & rp) {
 	NodeRendererState::doDisableState(context, node, rp);
-	static Util::Timer timer;
+
+	if(immediate)
+		return;
 
 	const DistanceSetF2B<Node> tempNodes = std::move(*activeNodes);
 	activeNodes.reset();
 
-	timer.reset();
+	frameTimer.reset();
 	//TODO: limit frame time
 	for(auto & activeNode : tempNodes) {
-		if(timeLimit > 0 && timer.getMilliseconds() > timeLimit)
+		if(timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
 			return;
 		doDisplayNode(context, activeNode, rp);
 	}
