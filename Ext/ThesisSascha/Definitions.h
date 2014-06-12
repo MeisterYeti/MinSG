@@ -29,10 +29,13 @@ static const Util::StringIdentifier SURFEL_ID("surfelId");
 static const Util::StringIdentifier SURFEL_STRINGID(NodeAttributeModifier::create("surfelStrId", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 static const Util::StringIdentifier SURFEL_REL_COVERING("surfelRelCovering");
 static const Util::StringIdentifier SURFEL_COUNT("surfelCount");
+static const Util::StringIdentifier SURFELS("surfels");
 
 static const Util::StringIdentifier MESH_ID("meshId");
 static const Util::StringIdentifier MESH_STRINGID(NodeAttributeModifier::create("meshStrId", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 static const Util::StringIdentifier MESH_COMPLEXITY("meshComplexity");
+
+static const Util::StringIdentifier NODE_COMPLEXITY(NodeAttributeModifier::create("nodeComplexity", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 
 static const Util::StringIdentifier NODE_LEVEL("nodeLevel");
 static const Util::StringIdentifier CHILDREN_LOADED(NodeAttributeModifier::create("childrenLoaded", NodeAttributeModifier::PRIVATE_ATTRIBUTE));

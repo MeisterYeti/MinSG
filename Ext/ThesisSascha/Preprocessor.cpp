@@ -27,11 +27,14 @@
 #include <Rendering/RenderingContext/RenderingContext.h>
 #include <Rendering/RenderingContext/RenderingParameters.h>
 #include <Rendering/Mesh/Mesh.h>
+#include <Rendering/Mesh/MeshVertexData.h>
+#include <Rendering/Mesh/VertexDescription.h>
 #include <Rendering/Serialization/Serialization.h>
 
 #include <MinSG/Core/RenderParam.h>
 #include <MinSG/Core/Nodes/Node.h>
 #include <MinSG/Core/Nodes/GroupNode.h>
+#include <MinSG/Core/Nodes/GeometryNode.h>
 #include <MinSG/Core/Nodes/CameraNodeOrtho.h>
 #include <MinSG/Helper/StdNodeVisitors.h>
 #include <MinSG/Ext/BlueSurfels/SurfelGenerator.h>
@@ -45,9 +48,9 @@
 #include <functional>
 #include <algorithm>
 
-#define POSITION 0
-#define NORMAL 1
-#define COLOR 2
+#define COLOR 0
+#define POSITION 1
+#define NORMAL 2
 #define SIZE 3
 
 namespace MinSG {
@@ -120,10 +123,12 @@ void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worl
 }
 
 NodeVisitor::status generateId(Node * node, uint32_t level) {
-	if(!node->isAttributeSet(SURFEL_ID)) {
+	if(node->isInstance())
+		node = node->getPrototype();
+	if(!node->findAttribute(SURFEL_ID)) {
 		node->setAttribute(SURFEL_ID, GenericAttribute::createString(StringUtils::createRandomString(32)));
 	}
-	if(!node->isAttributeSet(NODE_LEVEL)) {
+	if(!node->findAttribute(NODE_LEVEL)) {
 		node->setAttribute(NODE_LEVEL, GenericAttribute::createNumber(level));
 	} else {
 		dynamic_cast<_NumberAttribute<uint32_t>*>(node->getAttribute(NODE_LEVEL))->set(level);
@@ -134,8 +139,24 @@ NodeVisitor::status generateId(Node * node, uint32_t level) {
 uint32_t countComplexity(Node * root) {
 	uint32_t complexity = 0;
 	forEachNodeTopDown<Node>(root,[&complexity](Node* node){
+		if(node->findAttribute(NODE_COMPLEXITY)) {
+			if(node->isInstance())
+				node = node->getPrototype();
+			complexity += node->findAttribute(NODE_COMPLEXITY)->toUnsignedInt();
+			return;
+		}
 		//TODO: external nodes?
-		complexity += node->isAttributeSet(MESH_COMPLEXITY) ? node->findAttribute(MESH_COMPLEXITY)->toUnsignedInt() : 0;
+		complexity += node->findAttribute(MESH_COMPLEXITY) ? node->findAttribute(MESH_COMPLEXITY)->toUnsignedInt() : 0;
+		GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
+		if(geometry != nullptr) {
+			Mesh* mesh = geometry->getMesh();
+			if(mesh != nullptr)
+				complexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
+		}
+		if(node->isInstance())
+			node = node->getPrototype();
+		node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(complexity));
+
 	});
 	return complexity;
 }
@@ -185,63 +206,50 @@ Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameCo
 	// render textures
 	SurfelTextures_t textures;
 	{
-		Geometry::Matrix4x4 inverseModelMatrix = node->getWorldMatrix().inverse();
 		Reference<Texture> depthT = TextureUtils::createDepthTexture(resolution.x(), resolution.y());
+		textures.push_back(TextureUtils::createHDRTexture(resolution.x(), resolution.y(), true));
+		textures.push_back(TextureUtils::createHDRTexture(resolution.x(), resolution.y(), true));
+		textures.push_back(TextureUtils::createHDRTexture(resolution.x(), resolution.y(), true));
+		textures.push_back(TextureUtils::createStdTexture(resolution.x(), resolution.y(), true));
+
 		Reference<FBO> fbo(new FBO());
+		rc.pushAndSetFBO(fbo.get());
 		fbo->attachDepthTexture(rc, depthT.get());
+		fbo->attachColorTexture(rc, textures[COLOR].get(), 0);
+		fbo->attachColorTexture(rc, textures[POSITION].get(), 1);
+		fbo->attachColorTexture(rc, textures[NORMAL].get(), 2);
+		fbo->setDrawBuffers(3);
 		Geometry::Rect_i screenRect(0,0,resolution.x(), resolution.y());
 		Color4f clearColor(0,0,0,0);
 		RenderParam rp(RenderFlags::USE_WORLD_MATRIX);
 
-		static const StringIdentifier INVERSE_MODEL_MATRIX("inverseModelMatrix");
+		static const StringIdentifier EYESPACE_CONV_MATRIX("sg_mrt_eyeSpaceConversionMatrix");
 
-		for(uint_fast8_t pass = POSITION; pass <= COLOR; ++pass) {
-			Shader* shader = shaders[pass].get();
-			if(shader->isUniform(INVERSE_MODEL_MATRIX))
-				shader->setUniform(rc, Uniform(INVERSE_MODEL_MATRIX, inverseModelMatrix));
 
-			Texture* colorT = TextureUtils::createHDRTexture(resolution.x(), resolution.y(), true);
+		Geometry::Matrix4x4 inverseModelMatrix = node->getWorldMatrix().inverse();
 
-			fbo->attachColorTexture(rc, colorT, 0);
-			rc.pushAndSetFBO(fbo.get());
-			rc.pushAndSetShader(shader);
-			rc.pushAndSetScissor(ScissorParameters(screenRect));
-			rc.pushViewport();
-			rc.setViewport(screenRect);
-			rc.clearScreenRect(screenRect, clearColor, true);
-			for(auto camera : cameras) {
-//				rc.setImmediateMode(false);
-//				rc.applyChanges(true);
-				frameContext.setCamera(camera.get());
-//				rc.clearScreen(clearColor);
-				frameContext.displayNode(node, rp);
-//				rc.setImmediateMode(true);
-			}
-			rc.popViewport();
-			rc.popScissor();
-			rc.popShader();
-			rc.popFBO();
-			fbo->detachColorTexture(rc, 0);
-
-			/*rc.pushAndSetScissor(ScissorParameters(screenRect));
-			rc.pushViewport();
-			rc.setViewport(screenRect);
-			TextureUtils::drawTextureToScreen(rc, screenRect, colorT, Geometry::Rect(0,0,1,1));
-			FileName file("test" + std::to_string(pass) + ".png");
-			Serialization::saveTexture(rc, TextureUtils::createTextureFromScreen(), file);
-			rc.popViewport();
-			rc.popScissor();*/
-
-			textures.push_back(colorT);
+		rc.pushAndSetShader(mrtShader.get());
+		rc.pushAndSetScissor(ScissorParameters(screenRect));
+		rc.pushViewport();
+		rc.setViewport(screenRect);
+		rc.clearScreenRect(screenRect, clearColor, true);
+		for(auto camera : cameras) {
+			Geometry::Matrix4x4 m = inverseModelMatrix * camera->getWorldMatrix();
+			rc.setGlobalUniform(Uniform(EYESPACE_CONV_MATRIX, m));
+			frameContext.setCamera(camera.get());
+			frameContext.displayNode(node, rp);
 		}
+		rc.popViewport();
+		rc.popScissor();
+		rc.popShader();
+
+		fbo->detachColorTexture(rc,1);
+		fbo->detachColorTexture(rc,2);
 		fbo->detachDepthTexture(rc);
-
-		textures.push_back(TextureUtils::createStdTexture(resolution.x(), resolution.y(), true));
-
-
 		fbo->attachColorTexture(rc, textures[SIZE].get(), 0);
-		rc.pushAndSetFBO(fbo.get());
-		rc.pushAndSetShader(shaders[SIZE].get());
+		fbo->setDrawBuffers(1);
+
+		rc.pushAndSetShader(sizeShader.get());
 		rc.pushAndSetScissor(ScissorParameters(screenRect));
 		rc.pushViewport();
 		rc.setViewport(screenRect);
@@ -285,16 +293,29 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 }
 
 void Preprocessor::visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async) {
-	if(countComplexity(node) > surfelGenerator->getMaxAbsSurfels()) {
+	Node* proto = node->isInstance() ? node->getPrototype() : node;
+	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
+	if(geometry != nullptr && geometry->getMesh()->getVertexCount()>0) {
+		// externalize meshes
+		manager->storeMesh(geometry, async);
+	}
+	if(node->findAttribute(SURFELS)) {
+		ReferenceAttribute<Mesh>* attr = node->findAttribute(SURFELS)->toType<ReferenceAttribute<Mesh>>();
+		if(attr != nullptr) {
+			float coverage = node->findAttribute(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+			manager->storeSurfel(node,{attr->get(), coverage},async);
+			proto->unsetAttribute(SURFELS);
+			std::cout << "Attached Surfels found." << std::endl;
+		}
+	} else if(node->findAttribute(SURFEL_ID) && countComplexity(node) > surfelGenerator->getMaxAbsSurfels()) {
 		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 		buildAndStoreSurfels(frameContext, textures, node, async);
 	}
 	std::cout << "Progress: " << (static_cast<float>(++processed)/nodeCount) << std::endl;
 }
 
-void Preprocessor::initShaders(const FileName& helperShader, const FileName& positionShader, const FileName& normalShader, const FileName& colorShader, const FileName& sizeShader) {
+void Preprocessor::initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader) {
 	cameras.clear();
-	shaders.clear();
 
 	// Create cameras
 	cameras.push_back(new CameraNodeOrtho());
@@ -306,29 +327,8 @@ void Preprocessor::initShaders(const FileName& helperShader, const FileName& pos
 	cameras.push_back(new CameraNodeOrtho());
 	cameras.push_back(new CameraNodeOrtho());
 
-	// position shader
-	Shader* shader = Shader::loadShader(positionShader,positionShader,Shader::USE_UNIFORMS);
-	shader->attachShaderObject(ShaderObjectInfo::loadVertex(helperShader));
-	shader->attachShaderObject(ShaderObjectInfo::loadFragment(helperShader));
-	shaders.push_back(shader);
-
-	// normal shader
-	shader = Shader::loadShader(normalShader,normalShader,Shader::USE_UNIFORMS);
-	shader->attachShaderObject(ShaderObjectInfo::loadVertex(helperShader));
-	shader->attachShaderObject(ShaderObjectInfo::loadFragment(helperShader));
-	shaders.push_back(shader);
-
-	// color shader
-	shader = Shader::loadShader(colorShader,colorShader,Shader::USE_UNIFORMS);
-	shader->attachShaderObject(ShaderObjectInfo::loadVertex(helperShader));
-	shader->attachShaderObject(ShaderObjectInfo::loadFragment(helperShader));
-	shaders.push_back(shader);
-
-	// size shader
-	shader = Shader::loadShader(sizeShader,sizeShader,Shader::USE_UNIFORMS);
-	shader->attachShaderObject(ShaderObjectInfo::loadVertex(helperShader));
-	shader->attachShaderObject(ShaderObjectInfo::loadFragment(helperShader));
-	shaders.push_back(shader);
+	this->mrtShader = mrtShader;
+	this->sizeShader = sizeShader;
 }
 
 using std::placeholders::_1;
@@ -340,7 +340,16 @@ void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
 		nodeCount = nodes.size();
 	}
 	VisitNodeFn_t visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, _2, async);
-	forEachNodeBottomUp(root, generateId, visit);
+	forEachNodeBottomUp(root, [this] (Node* node, uint32_t level) {
+		if(countComplexity(node) > surfelGenerator->getMaxAbsSurfels())
+			return NodeVisitor::CONTINUE_TRAVERSAL;
+		return generateId(node, level);
+	}, visit);
+	forEachNodeTopDown(root, [] (Node* node) {
+		if(node->isInstance())
+			node = node->getPrototype();
+		node->unsetAttribute(NODE_COMPLEXITY);
+	});
 }
 
 void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {
@@ -350,21 +359,105 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float c
 		return;
 	}
 
-	coverage *= node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-
 	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 	buildAndStoreSurfels(frameContext, textures, node, async);
+	//TODO: recalculate coverage
+	coverage = node->findAttribute(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+	/*if(dynamic_cast<GeometryNode*>(node) != nullptr) {
+		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+		buildAndStoreSurfels(frameContext, textures, node, async);
+		coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+	} else {
+		std::deque<Node*> children = getChildNodes(node);
+		std::deque<SurfelInfo_t> surfels;
+		for(auto child : children) {
+			while(manager->loadSurfel(child,9999,0,false) == SurfelManager::Pending) {
+				manager->update();
+			}
+			if(manager->loadSurfel(child,9999,0,false) == SurfelManager::Success) {
+				float relCov = child->isAttributeSet(SURFEL_REL_COVERING) ? child->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+				surfels.push_back({manager->getSurfel(child), relCov});
+			}
+		}
+		Mesh* mesh = combineSurfelMeshes(surfels, node->isAttributeSet(SURFEL_COUNT) ? node->findAttribute(SURFEL_COUNT)->toUnsignedInt() :10000);
+		//TODO: calculate coverage
+		coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+		if(mesh != nullptr) {
+			manager->storeSurfel(node, {mesh, coverage}, async);
+		} else {
+			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+			buildAndStoreSurfels(frameContext, textures, node, async);
+			coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+		}
+	}*/
 
 	if(node->hasParent() && !abortUpdate(node, coverage)) {
 		updateSurfels(frameContext, node->getParent(), coverage, async);
 	}
 }
 
-Rendering::Mesh* Preprocessor::combineSurfelMeshes(const std::vector<SurfelInfo_t>& meshes, uint32_t targetSize) {
-	for(auto sInfo : meshes) {
-		//VertexDescription vd = sInfo.first->getVertexDescription();
+Rendering::Mesh* Preprocessor::combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize) {
+	if(meshes.empty())
+		return nullptr;
 
+	const SurfelInfo_t& first = meshes.front();
+
+	// Assuming all meshes have the same vertex description
+	const VertexDescription & vd = first.first->getVertexDescription();
+
+	// compute weights
+	std::vector<float> weights;
+	uint32_t surfelCount = 0;
+	for(auto sInfo : meshes) {
+		uint32_t c = sInfo.first->isUsingIndexData() ? sInfo.first->getIndexCount() : sInfo.first->getVertexCount();
+		surfelCount += c;
+		weights.push_back(c);
 	}
+	for(uint32_t i = 0; i<weights.size(); ++i) {
+		weights[i] /= surfelCount;
+	}
+
+	uint32_t vertexCount = std::min(surfelCount, targetSize);
+
+	uint32_t weightedSum = 0;
+	for(uint32_t i = 0; i<weights.size(); ++i) {
+		weights[i] /= surfelCount;
+	}
+
+	// create mesh
+	Mesh* mesh = new Mesh;
+	MeshVertexData & vertices = mesh->openVertexData();
+	vertices.allocate(vertexCount, vd);
+
+	uint32_t vertexPointer = 0;
+	std::vector<uint32_t> pointers(meshes.size(),0);
+	uint32_t currentCount = 0;
+	uint32_t vdSize = vd.getVertexSize();
+	while(currentCount < vertexCount) {
+		uint32_t i = 0;
+		bool fail = true;
+		for(auto sInfo : meshes) {
+			MeshVertexData & currentVertices = sInfo.first->openVertexData();
+			uint32_t vCount = currentVertices.getVertexCount();
+			uint32_t max = std::min(vCount, static_cast<uint32_t>(std::ceil(vertexCount*weights[i])));
+			if(pointers[i] >= max) {
+				fail = false;
+				continue;
+			}
+
+			std::copy(currentVertices.data() + pointers[i], currentVertices.data() + pointers[i] + vdSize, vertices[vertexPointer]);
+			++pointers[i];
+			++currentCount;
+			vertexPointer += vdSize;
+		}
+		if(currentCount < vertexCount && fail) {
+			WARN("combineSurfelMeshes failed!"); //TODO: better error description
+			delete mesh;
+			return nullptr;
+		}
+	}
+	// TODO: calculate combined coverage
+	return mesh;
 }
 
 } /* namespace ThesisSascha */
