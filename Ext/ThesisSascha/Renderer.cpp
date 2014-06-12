@@ -116,10 +116,10 @@ NodeRendererResult Renderer::doDisplayNode(FrameContext& context, Node* node, co
 				}
 			}
 			return NodeRendererResult::PASS_ON;
-		} else {
+		} else if(geometry->getMesh()->getVertexCount()>0) {
 			//geometry->setMesh(tmpMesh);
+			return NodeRendererResult::PASS_ON;
 		}
-		return NodeRendererResult::PASS_ON;
 	}
 	// calculate treshold
 	// if below threshold

@@ -54,7 +54,7 @@ public:
 	Preprocessor(SurfelManager* manager);
 	virtual ~Preprocessor();
 
-	void initShaders(const Util::FileName& helperShader, const Util::FileName& positionShader, const Util::FileName& normalShader, const Util::FileName& colorShader, const Util::FileName& sizeShader);
+	void initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader);
 
 	void process(FrameContext& frameContext, Node* root, bool async = true);
 
@@ -65,9 +65,10 @@ private:
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
 	void visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async);
-	Rendering::Mesh* combineSurfelMeshes(const std::vector<SurfelInfo_t>& meshes, uint32_t targetSize);
+	Rendering::Mesh* combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize);
 
-	std::vector<Util::Reference<Rendering::Shader> > shaders;
+	Util::Reference<Rendering::Shader> mrtShader;
+	Util::Reference<Rendering::Shader> sizeShader;
 	std::vector<Util::Reference<MinSG::CameraNodeOrtho> > cameras;
 
 	static Geometry::Vec3 directions[];
