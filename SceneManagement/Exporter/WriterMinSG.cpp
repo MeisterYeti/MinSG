@@ -40,7 +40,7 @@ static void convertDescriptionToXML(std::ostream & out,const NodeDescription & d
 	}
 	std::sort(attributes.begin(),attributes.end());
 	for(const auto & a : attributes)
-		out << " "<<a.first<<"=\""<<StringUtils::replaceAll(a.second,  "\"","&quot;")<<"\"";
+		out << " "<<a.first<<"=\""<<StringUtils::replaceMultiple(a.second, {{"&","&amp;"},{"\"","&quot;"},{"<","&lt;"},{">","&gt;"}})<<"\"";
 	
 	
 	const NodeDescriptionList * children = dynamic_cast<NodeDescriptionList *>(d.getValue(Consts::CHILDREN));
