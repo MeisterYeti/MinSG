@@ -60,6 +60,7 @@ public:
 	bool isCached(Node* node);
 
 	void update();
+	void clear();
 
 	Preprocessor* getPreprocessor() const { return preprocessor.get(); }
 	const Util::FileName getBasePath() const { return basePath; }

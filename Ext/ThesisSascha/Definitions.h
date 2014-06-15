@@ -19,6 +19,7 @@ namespace MinSG {
 namespace ThesisSascha {
 
 static const uint32_t MAX_JOB_NUMBER = 100;
+static const uint32_t MAX_FLUSH_TIME = 30;
 static const size_t INITIAL_POOL_SIZE = 200;
 
 typedef Util::WrapperAttribute<Util::StringIdentifier> StringIDAttribute_t;
@@ -38,6 +39,7 @@ static const Util::StringIdentifier MESH_COMPLEXITY("meshComplexity");
 static const Util::StringIdentifier NODE_COMPLEXITY(NodeAttributeModifier::create("nodeComplexity", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 
 static const Util::StringIdentifier NODE_LEVEL("nodeLevel");
+static const Util::StringIdentifier NODE_HANDLED(NodeAttributeModifier::create("nodeHandled", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 static const Util::StringIdentifier CHILDREN_LOADED(NodeAttributeModifier::create("childrenLoaded", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 
 }
