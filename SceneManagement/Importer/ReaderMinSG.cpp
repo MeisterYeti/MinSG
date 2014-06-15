@@ -42,7 +42,7 @@ static bool visitorEnter(VisitorContext & ctxt,
 	}
 
 	for(const auto & attrEntry : attributes) {
-		desc->setString(attrEntry.first, attrEntry.second);// TODO! (manager.parseString(it->second)));
+		desc->setString(attrEntry.first, Util::StringUtils::replaceAll(attrEntry.second, "&#38;", "&"));// TODO! (manager.parseString(it->second)));
 	}
 
 	if(!parent) {
