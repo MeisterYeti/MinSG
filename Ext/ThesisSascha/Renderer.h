@@ -53,14 +53,18 @@ public:
 	bool isAsync() { return this->async; }
 	void setImmediate(bool immediate) { this->immediate = immediate; }
 	bool isImmediate() { return this->immediate; }
+	void setWait(bool value) { this->waitForRender = value; }
 	void setTimeLimit(uint32_t time) { this->timeLimit = time; }
 	uint32_t getTimeLimit() { return this->timeLimit; }
 	float getDebugTime() const { return debugTimer.getMilliseconds(); }
 	float getFrameTime() const { return frameTimer.getMilliseconds(); }
+
+	static void drawMesh(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh);
+	static void drawSurfels(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh, float pSize, uint32_t count);
 protected:
 	stateResult_t doEnableState(FrameContext & context, Node *, const RenderParam & rp) override;
 	void doDisableState(FrameContext & context, Node * node, const RenderParam & rp) override;
-	NodeRendererResult doDisplayNode(FrameContext & context, Node * node, const RenderParam & rp);
+	bool doDisplayNode(FrameContext & context, Node * node, const RenderParam & rp);
 private:
 	Util::Reference<SurfelManager> manager;
 
@@ -73,6 +77,7 @@ private:
 	std::unique_ptr<DistanceSetF2B<Node>> activeNodes;
 	bool async;
 	bool immediate;
+	bool waitForRender;
 	uint32_t timeLimit;
 	Util::Timer frameTimer;
 	Util::Timer debugTimer;

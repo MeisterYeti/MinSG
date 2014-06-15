@@ -61,7 +61,17 @@ public:
 	void updateSurfels(FrameContext& frameContext, Node* node, float coverage=1.0f, bool async = true);
 
 	void setAbortUpdateFn(const std::function<bool(Node*,float)> & function) { this->abortUpdate = function; }
+
+	void setUpdateProgressFn(const std::function<void(uint32_t,uint32_t)> & function) { this->updateProgress = function; }
+
+	uint32_t getMaxAbsSurfels()const;
+	float getReusalRate()const;
+	void setMaxAbsSurfels(uint32_t i);
+	void setReusalRate(float f);
+	void setMaxComplexity(uint32_t value) { maxComplexity = value; }
 private:
+	class InternalRenderer;
+
 	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
 	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
 	void visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async);
@@ -77,11 +87,15 @@ private:
 
 	BlueSurfels::SurfelGenerator* surfelGenerator;
 	Util::WeakPointer<SurfelManager> manager;
+	Util::Reference<InternalRenderer> internalRenderer;
 
 	std::function<bool(Node*,float)> abortUpdate;
 
+	std::function<void(uint32_t,uint32_t)> updateProgress;
+
 	uint32_t processed;
 	uint32_t nodeCount;
+	uint32_t maxComplexity;
 };
 
 } /* namespace ThesisSascha */

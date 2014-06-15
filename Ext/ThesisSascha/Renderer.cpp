@@ -25,6 +25,7 @@
 
 #include <Util/StringIdentifier.h>
 #include <Util/GenericAttribute.h>
+#include <Util/Utils.h>
 
 #include <deque>
 #include <string>
@@ -36,7 +37,7 @@ namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
 
-Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false), immediate(false), timeLimit(0) {
+Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false), immediate(false), waitForRender(false), timeLimit(0) {
 	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
@@ -54,7 +55,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	switch (result) {
 		case RefineNode_t::RefineAndSkip:
 			if(dynamic_cast<GeometryNode*>(node) != nullptr) {
-				if(immediate)
+				if(waitForRender)
+					while(!doDisplayNode(context, node, rp)) {Utils::sleep(1); manager->update();}
+				else if(immediate)
 					doDisplayNode(context, node, rp);
 				else
 					activeNodes->insert(node);
@@ -62,14 +65,18 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 			}
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::RefineAndContinue:
-			if(immediate)
+			if(waitForRender)
+				while(!doDisplayNode(context, node, rp)) {Utils::sleep(1); manager->update();}
+			else if(immediate)
 				doDisplayNode(context, node, rp);
 			else
 				activeNodes->insert(node);
 				//activeNodes.push_back(node);
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::SkipChildren:
-			if(immediate)
+			if(waitForRender)
+				while(!doDisplayNode(context, node, rp)) {Utils::sleep(1); manager->update();}
+			else if(immediate)
 				doDisplayNode(context, node, rp);
 			else
 				activeNodes->insert(node);
@@ -81,104 +88,85 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	return NodeRendererResult::NODE_HANDLED;
 }
 
-NodeRendererResult Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderParam& rp) {
-	static Mesh* tmpMesh = new Mesh();
+void Renderer::drawMesh(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh) {
+	if(node->hasStates() && !(rp.getFlag(NO_STATES))) {
+		for(auto & stateEntry : node->getStates()) {
+			const State::stateResult_t result = stateEntry->enableState(context, node, rp);
+		}
+	}
+
+	RenderingContext& rc = context.getRenderingContext();
+	rc.pushMatrix();
+	rc.resetMatrix();
+	rc.multMatrix(node->getWorldMatrix());
+	context.displayMesh(mesh);
+	rc.popMatrix();
+	if(node->hasStates() && !(rp.getFlag(NO_STATES))) {
+		for(auto & stateEntry : node->getStates()) {
+			stateEntry->disableState(context, node, rp);
+		}
+	}
+}
+void Renderer::drawSurfels(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh, float pSize, uint32_t count) {
+	if(count == 0)
+		return;
+	RenderingContext& rc = context.getRenderingContext();
+	rc.pushAndSetPointParameters(PointParameters(pSize, false));
+	rc.pushMatrix();
+	rc.resetMatrix();
+	rc.multMatrix(node->getWorldMatrix());
+	context.displayMesh(mesh, 0, count);
+	rc.popMatrix();
+	rc.popPointParameters();
+}
+
+bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderParam& rp) {
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = std::sqrt(size);
 	float distance = node->getWorldBB().getDistanceSquared(context.getCamera()->getWorldPosition());
 
-	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
+	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node->isInstance() ? node->getPrototype() : node);
 	if(geometry != nullptr) {
 		SurfelManager::MeshLoadResult_t result = manager->loadMesh(geometry, qSize, distance, async);
 		if(result == SurfelManager::Success) {
 			Mesh* mesh = manager->getMesh(node);
 			if(mesh == nullptr) {
 				WARN("Empty mesh found! " + node->findAttribute(MESH_ID)->toString());
-				return NodeRendererResult::PASS_ON;
+				return false;
 			}
-			if(geometry->hasStates() && !(rp.getFlag(NO_STATES))) {
-				for(auto & stateEntry : geometry->getStates()) {
-					const State::stateResult_t result = stateEntry->enableState(context, geometry, rp);
-				}
-			}
-
-			RenderingContext& rc = context.getRenderingContext();
-			rc.pushMatrix();
-			rc.resetMatrix();
-			rc.multMatrix(node->getWorldMatrix());
-			context.displayMesh(mesh);
-			rc.popMatrix();
-			//geometry->setMesh(mesh);
-			if(geometry->hasStates() && !(rp.getFlag(NO_STATES))) {
-				for(auto & stateEntry : geometry->getStates()) {
-					stateEntry->disableState(context, geometry, rp);
-				}
-			}
-			return NodeRendererResult::PASS_ON;
+			drawMesh(context, node, rp, mesh);
+			return true;
 		} else if(geometry->getMesh()->getVertexCount()>0) {
-			//geometry->setMesh(tmpMesh);
-			return NodeRendererResult::PASS_ON;
+			return true;
 		}
 	}
-	// calculate treshold
-	// if below threshold
-	//   remove or ignore surfels
-	//   abort subtree rendering
-	// else
-	//   if not has surfels
-	//     load surfels
-	//	   abort subtree rendering
-	//   else
-	//     draw surfels
-
-
-	//TODO: only pass on when children are loaded
-	/*GroupNode* grpNode = dynamic_cast<GroupNode*>(node);
-	bool childrenLoaded = false;
-	bool allChildrenLoaded = true;
-	if(grpNode != nullptr) {
-		std::deque<Node*> children = getChildNodes(grpNode);
-		bool tmp;
-		for(auto it = children.begin(); it != children.end() && !childrenLoaded; ++it) {
-			tmp = manager->isCached(*it);;
-			allChildrenLoaded &= tmp;
-			childrenLoaded |= tmp;
-		}
-	}*/
 
 	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(node, qSize, distance, async);
 	if(result == SurfelManager::Success ) {
 		Mesh* mesh = manager->getSurfel(node);
 		if(mesh == nullptr) {
 			WARN("Empty surfel mesh found! " + node->findAttribute(SURFEL_ID)->toString());
-			return NodeRendererResult::PASS_ON;
+			return false;
 		}
 		uint32_t maxCount = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
-		uint32_t count = clamp<uint32_t>(countFn(node, size, maxCount, relCovering), 1, maxCount);
+		uint32_t count = clamp<uint32_t>(countFn(node, size, maxCount, relCovering), 0, maxCount);
 		float pSize = sizeFn(node, size, maxCount, relCovering);
 		if(pSize < 1)
 			pSize = 1;
 
-		RenderingContext& rc = context.getRenderingContext();
-		rc.pushAndSetPointParameters(PointParameters(pSize, false));
-		rc.pushMatrix();
-		rc.resetMatrix();
-		rc.multMatrix(node->getWorldMatrix());
-		context.displayMesh(mesh, 0, count);
-		rc.popMatrix();
-		rc.popPointParameters();
+		drawSurfels(context, node, rp, mesh, pSize, count);
 
-		return NodeRendererResult::NODE_HANDLED;
-		//return NodeRendererResult::PASS_ON;
+		return true;
 	}
 
-	if(result == SurfelManager::Pending)
-		return NodeRendererResult::NODE_HANDLED;
-	return NodeRendererResult::PASS_ON;
+	if(result == SurfelManager::Failed)
+		return true;
+
+	return false;
 }
 
 State* Renderer::clone() const {

@@ -27,6 +27,7 @@
 #include <Util/Concurrency/Mutex.h>
 #include <Util/Concurrency/Lock.h>
 #include <Util/IO/FileUtils.h>
+#include <Util/Timer.h>
 
 #include <iostream>
 #include <cstdlib>
@@ -205,8 +206,8 @@ public:
 		Reference<Mesh> source;
 	};
 
-	WorkerThread(SurfelManager* manager) : closed(false), manager(manager), memoryMutex(Concurrency::createMutex()) { start(); };
-	virtual ~WorkerThread() { delete memoryMutex; };
+	WorkerThread(SurfelManager* manager) : closed(false), manager(manager), mutex(Concurrency::createMutex()), memoryMutex(Concurrency::createMutex()) { start(); };
+	virtual ~WorkerThread() = default;
 	void close();
 	void executeAsync(const std::function<void()>& function);
 	void flush();
@@ -216,10 +217,11 @@ protected:
 	SyncQueue<Job_t> jobQueue;
 	bool closed;
 	SurfelManager* manager;
+	std::unique_ptr<Concurrency::Mutex> mutex;
 public:
 	SyncQueue<MeshSwap_t> swapQueue;
 	SyncQueue<std::function<void()>> mainThreadQueue;
-	Concurrency::Mutex* memoryMutex;
+	std::unique_ptr<Concurrency::Mutex> memoryMutex;
 };
 
 void WorkerThread::close() {
@@ -231,8 +233,11 @@ void WorkerThread::close() {
 
 void WorkerThread::run() {
 	while(!closed) {
-		Job_t job = jobQueue.pop();
-		//std::cout << "execute async function " << std::endl;
+		Job_t job;
+		{
+		auto lock = Concurrency::createLock(*mutex);
+		job = jobQueue.pop();
+		}
 		job.function();
 	}
 }
@@ -248,12 +253,20 @@ void WorkerThread::executeAsync(const std::function<void()>& function) {
 }
 
 void WorkerThread::flush() {
+	static Timer timer;
 	if(closed)
 		return;
-	//TODO: don't use busy waiting
-	while(!closed && jobQueue.empty()) {
-		Utils::sleep(1);
+	timer.reset();
+	auto lock = Concurrency::createLock(*mutex);
+	uint32_t i = 0;
+	while(!closed && !jobQueue.empty() && timer.getMilliseconds() < MAX_FLUSH_TIME) {
+		Job_t job = jobQueue.pop();
+		mutex->unlock();
+		job.function();
+		mutex->lock();
+		++i;
 	}
+	std::cout << "flushed " << i << " jobs. (" << timer.getMilliseconds() << "ms)" << std::endl;
 }
 
 /******************************************
@@ -304,18 +317,24 @@ bool SurfelManager::isCached(Node* node) {
 		node = node->getPrototype();
 	if(!node->isAttributeSet(SURFEL_ID) && !node->isAttributeSet(MESH_ID))
 		return true; // return true because there might be surfels in the subtree
-	if(node->isAttributeSet(SURFEL_ID)) {
-		const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
-		auto it = idToCacheObject.find(id);
-		if(it != idToCacheObject.end()) {
-			return it->second->isLoaded();
-		}
+	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
+	if(geometry != nullptr && geometry->getMesh()->getVertexCount() > 0) {
+		return true;
 	}
 	if(node->isAttributeSet(MESH_ID)) {
 		const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
 		auto it = idToCacheObject.find(id);
 		if(it != idToCacheObject.end()) {
-			return it->second->isLoaded();
+			if(it->second->isLoaded())
+				return true;
+		}
+	}
+	if(node->isAttributeSet(SURFEL_ID)) {
+		const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
+		auto it = idToCacheObject.find(id);
+		if(it != idToCacheObject.end()) {
+			if(it->second->isLoaded())
+				return true;
 		}
 	}
 	return false;
@@ -404,15 +423,13 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIden
 		//WARN("object empty ");
 		return Failed;
 	}
-	{
+	/*{
 		auto lock = Concurrency::createLock(*worker->memoryMutex);
 		if(usedMemory >= maxMemory) {
 			return Pending;
 		}
-	}
-	// FIXME: Here be Dragons! (infinite loop when surfel file not exist)
+	}*/
 	if(!FileUtils::isFile(filename)) {
-		//preprocessor->updateSurfels(frameContext, node);
 		return Failed;
 	}
 	if(object == nullptr) {
@@ -433,7 +450,7 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIden
 	std::function<void()> readFn = [this, object, filename] () {
 		{
 			auto lock = Concurrency::createLock(*worker->memoryMutex);
-			if(object->isAborted() || usedMemory >= maxMemory) {
+			if(object->isAborted() || usedMemory > maxMemory) {
 				object->state = CacheObject::Empty;
 				return;
 			}
@@ -477,10 +494,6 @@ void SurfelManager::update() {
 		auto it = idToCacheObject.find(meshSwap.id);
 		if(it != idToCacheObject.end()) {
 			meshSwap.source->swap(*meshSwap.target.get());
-			//it->second->state = CacheObject::Loaded;
-			//auto lock = Concurrency::createLock(*worker->memoryMutex);
-			// TODO: remove old mesh from used memory
-			//usedMemory += meshSwap.first->getMainMemoryUsage() + meshSwap.first->getGraphicsMemoryUsage();
 		}
 	}
 	++frameNumber;
@@ -498,7 +511,7 @@ void SurfelManager::update() {
 				releaseCacheObject(object);
 			} else if(object->isAborted()) {
 				// do nothing
-			} else if(usedMemory > maxMemory * memoryLoadFactor) {
+			} else if(usedMemory >= maxMemory * memoryLoadFactor) {
 				usedMemory -= object->memory;
 				//std::cout << "released " << object->id.toString() << ". memory usage: " << usedMemory << "/" << maxMemory << std::endl;
 				if(object->isPending()) {
@@ -514,22 +527,19 @@ void SurfelManager::update() {
 		}
 		sortedCacheObjects.swap(cacheObjectBuffer);
 	}
-	/*for(auto obj : updatedCacheObjects) {
-		auto it = idToCacheObject.find(obj->id);
-		if(it != idToCacheObject.end()) {
-			it->second->swap(obj);
-			releaseCacheObject(obj);
-		} else {
-			idToCacheObject[obj->id] = obj;
-			// TODO: directly sort in
-			for(auto it : sortedCacheObjects) {
-				if(obj == it)
-					WARN("Object already present");
-			}
-			sortedCacheObjects.push_back(obj);
-		}
+}
+
+void SurfelManager::clear() {
+	update();
+	auto lock = Concurrency::createLock(*worker->memoryMutex);
+	cacheObjectBuffer.clear();
+	while(!sortedCacheObjects.empty()) {
+		CacheObject* object = sortedCacheObjects.back();
+		sortedCacheObjects.pop_back();
+		releaseCacheObject(object);
 	}
-	updatedCacheObjects.clear();*/
+	usedMemory = 0;
+	frameNumber = 0;
 }
 
 void SurfelManager::executeAsync(const std::function<void()>& function) {
