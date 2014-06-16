@@ -206,18 +206,17 @@ public:
 		Reference<Mesh> source;
 	};
 
-	WorkerThread(SurfelManager* manager) : closed(false), manager(manager), mutex(Concurrency::createMutex()), memoryMutex(Concurrency::createMutex()) { start(); };
+	WorkerThread(SurfelManager* manager) : closed(false), manager(manager), memoryMutex(Concurrency::createMutex()) { start(); };
 	virtual ~WorkerThread() = default;
 	void close();
 	void executeAsync(const std::function<void()>& function);
-	void flush();
+	void flush(uint32_t timeLimit = MAX_FLUSH_TIME);
 protected:
 	void run() override;
 
 	SyncQueue<Job_t> jobQueue;
 	bool closed;
 	SurfelManager* manager;
-	std::unique_ptr<Concurrency::Mutex> mutex;
 public:
 	SyncQueue<MeshSwap_t> swapQueue;
 	SyncQueue<std::function<void()>> mainThreadQueue;
@@ -234,10 +233,7 @@ void WorkerThread::close() {
 void WorkerThread::run() {
 	while(!closed) {
 		Job_t job;
-		{
-		auto lock = Concurrency::createLock(*mutex);
 		job = jobQueue.pop();
-		}
 		job.function();
 	}
 }
@@ -252,21 +248,15 @@ void WorkerThread::executeAsync(const std::function<void()>& function) {
 		flush();
 }
 
-void WorkerThread::flush() {
+void WorkerThread::flush(uint32_t timeLimit) {
 	static Timer timer;
 	if(closed)
 		return;
 	timer.reset();
-	auto lock = Concurrency::createLock(*mutex);
-	uint32_t i = 0;
-	while(!closed && !jobQueue.empty() && timer.getMilliseconds() < MAX_FLUSH_TIME) {
-		Job_t job = jobQueue.pop();
-		mutex->unlock();
-		job.function();
-		mutex->lock();
-		++i;
+	while(!closed && !jobQueue.empty() && (timeLimit == 0 || timer.getMilliseconds() < timeLimit)) {
+		Utils::sleep(1);
 	}
-	std::cout << "flushed " << i << " jobs. (" << timer.getMilliseconds() << "ms)" << std::endl;
+	std::cout << "flushed jobs. (" << timer.getMilliseconds() << "ms)" << std::endl;
 }
 
 /******************************************
@@ -540,6 +530,11 @@ void SurfelManager::clear() {
 	}
 	usedMemory = 0;
 	frameNumber = 0;
+}
+
+void SurfelManager::flush() {
+	update();
+	worker->flush(0);
 }
 
 void SurfelManager::executeAsync(const std::function<void()>& function) {

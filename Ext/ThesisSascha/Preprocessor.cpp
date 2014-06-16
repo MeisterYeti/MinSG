@@ -211,8 +211,10 @@ NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & co
 		++depth;
 		tmp = tmp->getParent();
 	}
-	if(depth > MAX_DEPTH) {
-		return NodeRendererResult::NODE_HANDLED;
+
+	NodeRendererResult renderResult = NodeRendererResult::PASS_ON;
+	if(depth >= MAX_DEPTH) {
+		renderResult = NodeRendererResult::NODE_HANDLED;
 	}
 
 	SurfelManager::MeshLoadResult_t result;
@@ -223,13 +225,13 @@ NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & co
 	if(result == SurfelManager::Success) {
 		Mesh* mesh = processor->manager->getSurfel(node);
 		if(mesh == nullptr) {
-			return NodeRendererResult::PASS_ON;
+			return renderResult;
 		}
 		uint32_t count = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 		Renderer::drawSurfels(context, node, rp, mesh , 4, count);
-		return NodeRendererResult::PASS_ON;
+		return renderResult;
 	}
-	return NodeRendererResult::PASS_ON;
+	return renderResult;
 }
 
 State::stateResult_t Preprocessor::InternalRenderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
@@ -373,7 +375,7 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 			std::cout << "building surfels... " << std::endl;
 			SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 			std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-			std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, async);
+			std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, false);
 			manager->executeOnMainThread(storeSurfel);
 		});
 	} else {
@@ -382,7 +384,7 @@ void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const Surfel
 		SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 		std::cerr << std::flush;
 		std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-		manager->storeSurfel(node, surfels, async);
+		manager->storeSurfel(node, surfels, false);
 	}
 }
 
@@ -395,17 +397,18 @@ void Preprocessor::visitNode(FrameContext& frameContext, Node* node, uint32_t le
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(proto);
 	if(geometry != nullptr && geometry->getMesh()->getVertexCount()>0) {
 		// externalize meshes
-		manager->storeMesh(geometry, async);
+		manager->storeMesh(geometry, false);
 		geometry->setFixedBB(geometry->getBB());
 		Mesh* mesh = geometry->getMesh();
 		proto->setAttribute(MESH_COMPLEXITY, GenericAttribute::createNumber(mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount()));
 		geometry->setMesh(new Mesh);
+		dynamic_cast<GeometryNode*>(node)->setMesh(geometry->getMesh());
 	}
 	if(node->findAttribute(SURFELS)) {
 		ReferenceAttribute<Mesh>* attr = node->findAttribute(SURFELS)->toType<ReferenceAttribute<Mesh>>();
 		if(attr != nullptr) {
 			float coverage = node->findAttribute(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-			manager->storeSurfel(node,{attr->get(), coverage},async);
+			manager->storeSurfel(node,{attr->get(), coverage},false);
 			proto->unsetAttribute(SURFELS);
 			std::cout << "Attached Surfels found." << std::endl;
 		}
@@ -455,19 +458,38 @@ void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
 		node->unsetAttribute(NODE_COMPLEXITY);
 		node->unsetAttribute(NODE_HANDLED);
 	});
+	manager->flush();
 }
 
 void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {
-	//TODO: return updated nodes?
-	if(!node->findAttribute(SURFEL_ID)) {
-		WARN("Could not update surfels for node. Missing surfel id.");
-		return;
+	std::deque<Node*> todo;
+	todo.push_back(node);
+	while(node->hasParent()) {
+		node = node->getParent();
+		todo.push_back(node);
+	}
+	processed = 0;
+	nodeCount = todo.size();
+	updateProgress(processed, nodeCount);
+
+	while(!todo.empty()) {
+		Node* current = todo.front();
+		todo.pop_front();
+		++processed;
+		if(current->findAttribute(SURFEL_ID)) {
+			coverage *= current->findAttribute(SURFEL_REL_COVERING) ? current->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+			buildAndStoreSurfels(frameContext, textures, node, async);
+
+			if(abortUpdate(current, coverage)) {
+				processed = nodeCount;
+				todo.clear();
+			}
+		}
+		updateProgress(processed, nodeCount);
 	}
 
-	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-	buildAndStoreSurfels(frameContext, textures, node, async);
 	//TODO: recalculate coverage
-	coverage *= node->findAttribute(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
 	/*if(dynamic_cast<GeometryNode*>(node) != nullptr) {
 		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 		buildAndStoreSurfels(frameContext, textures, node, async);
@@ -495,10 +517,6 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float c
 			coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
 		}
 	}*/
-
-	if(node->hasParent() && !abortUpdate(node, coverage)) {
-		updateSurfels(frameContext, node->getParent(), coverage, async);
-	}
 }
 
 Rendering::Mesh* Preprocessor::combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize) {
