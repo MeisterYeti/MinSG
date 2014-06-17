@@ -50,6 +50,7 @@
 #include <string>
 #include <functional>
 #include <algorithm>
+#include <stdexcept>
 
 #define COLOR 0
 #define POSITION 1
@@ -137,6 +138,9 @@ NodeVisitor::status generateId(Node * node, uint32_t level) {
 		node = node->getPrototype();
 	if(!node->findAttribute(SURFEL_ID)) {
 		node->setAttribute(SURFEL_ID, GenericAttribute::createString(StringUtils::createRandomString(32)));
+	} else {
+		// do not regenerate surfels
+		node->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
 	}
 	return NodeVisitor::CONTINUE_TRAVERSAL;
 }
@@ -274,12 +278,19 @@ Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameCo
 		float maxWidth = 0;
 		float maxHeight = 0;
 		auto it = cameras.begin();
+		try {
 		for(auto dir : Preprocessor::directions) {
 			CameraNodeOrtho* camera = (*it).get();
 			updateEnclosingOrthoCam(camera, dir, node);
 			maxWidth = std::max(maxWidth, camera->getRightClippingPlane()-camera->getLeftClippingPlane());
 			maxHeight = std::max(maxHeight, camera->getTopClippingPlane()-camera->getBottomClippingPlane());
 			++it;
+		}
+		} catch(std::invalid_argument& e) {
+			// frustum with zero volume -> remove surfel and return
+			WARN(e.what());
+			node->isInstance() ? node->getPrototype()->unsetAttribute(SURFEL_ID) : node->unsetAttribute(SURFEL_ID);
+			return SurfelTextures_t();
 		}
 		float scaling = (verticalResolution-2) / std::max(maxWidth,maxHeight);
 		int x = 0;
@@ -363,6 +374,8 @@ Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameCo
 }
 
 void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async) {
+	if(textures.size() < 4)
+		return;
 	static Util::Timer timer;
 	RenderingContext& rc = frameContext.getRenderingContext();
 	Util::Reference<Util::PixelAccessor> pos = TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get());

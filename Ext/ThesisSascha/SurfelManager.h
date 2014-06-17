@@ -34,7 +34,6 @@ class GeometryNode;
 
 namespace ThesisSascha {
 
-class WorkerThread;
 class Preprocessor;
 class CacheObject;
 
@@ -78,9 +77,11 @@ public:
 	uint32_t getMaxJobs() const { return maxJobNumber; }
 	void setMemoryLoadFactor(float value)  { memoryLoadFactor = value; }
 	float getMemoryLoadFactor() const { return memoryLoadFactor; }
+	void setMaxJobFlushTime(uint32_t time)  { maxJobFlushTime = time; }
 
 	void setPriorityOrder(const std::vector<uint32_t>& order);
 private:
+	class WorkerThread;
 	void doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async);
 	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, float distance, bool async);
 
@@ -97,6 +98,7 @@ private:
 	uint64_t usedMemory;
 	uint32_t frameNumber;
 	uint32_t maxJobNumber;
+	uint32_t maxJobFlushTime;
 	float memoryLoadFactor;
 
 	typedef std::vector<CacheObject*> SortedCache_t;
