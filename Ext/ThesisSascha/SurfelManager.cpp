@@ -195,7 +195,7 @@ struct CacheObjectCompare {
  * WorkerThread class
  ******************************************/
 
-class WorkerThread : public UserThread {
+class SurfelManager::WorkerThread : public UserThread {
 public:
 	struct Job_t {
 		std::function<void()> function;
@@ -216,21 +216,21 @@ protected:
 
 	SyncQueue<Job_t> jobQueue;
 	bool closed;
-	SurfelManager* manager;
+	WeakPointer<SurfelManager> manager;
 public:
 	SyncQueue<MeshSwap_t> swapQueue;
 	SyncQueue<std::function<void()>> mainThreadQueue;
 	std::unique_ptr<Concurrency::Mutex> memoryMutex;
 };
 
-void WorkerThread::close() {
+void SurfelManager::WorkerThread::close() {
 	if(closed)
 		return;
 	//closed = true;
 	jobQueue.push({[this]() { this->closed = true; }});
 }
 
-void WorkerThread::run() {
+void SurfelManager::WorkerThread::run() {
 	while(!closed) {
 		Job_t job;
 		job = jobQueue.pop();
@@ -238,17 +238,17 @@ void WorkerThread::run() {
 	}
 }
 
-void WorkerThread::executeAsync(const std::function<void()>& function) {
+void SurfelManager::WorkerThread::executeAsync(const std::function<void()>& function) {
 	if(closed)
 		return;
 	Job_t job;
 	job.function = function;
 	jobQueue.push(job);
 	if(jobQueue.size() > manager->getMaxJobs())
-		flush();
+		flush(manager->maxJobFlushTime);
 }
 
-void WorkerThread::flush(uint32_t timeLimit) {
+void SurfelManager::WorkerThread::flush(uint32_t timeLimit) {
 	static Timer timer;
 	if(closed)
 		return;
@@ -264,7 +264,7 @@ void WorkerThread::flush(uint32_t timeLimit) {
  ******************************************/
 
 SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory) : basePath(basePath), worker(new WorkerThread(this)),
-		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), memoryLoadFactor(0.8f) {
+		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), maxJobFlushTime(30), memoryLoadFactor(0.8f) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
 	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
@@ -446,7 +446,10 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIden
 			}
 		}
 		//std::cout << "loading mesh " << filename.toString() << " ..." << std::flush;
-		Reference<Mesh> mesh = Serialization::loadMesh(filename);
+		//Reference<Mesh> mesh = Serialization::loadMesh(filename);
+		// TODO: use this method only for surfels (faster for small files?)
+		std::string data = FileUtils::getFileContents(filename);
+		Reference<Mesh> mesh = Serialization::loadMesh("mmf", data);
 		//std::cout << "done" << std::endl;
 		if(mesh.isNull()) {
 			WARN("Could not load mesh: " + filename.toString());
