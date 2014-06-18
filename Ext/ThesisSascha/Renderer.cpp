@@ -113,6 +113,7 @@ Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : man
 	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
+	activeNodes.reset(new SortedNodeSet(Geometry::Vec3()));
 }
 
 template<typename T>
@@ -211,9 +212,11 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 			}
 			drawMesh(context, node, rp, mesh);
 			currentComplexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
+			node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount()));
 			return true;
 		} else if(geometry->getMesh()->getVertexCount()>0) {
 			currentComplexity += geometry->getMesh()->isUsingIndexData() ? geometry->getMesh()->getIndexCount() : geometry->getMesh()->getVertexCount();
+			node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(geometry->getMesh()->isUsingIndexData() ? geometry->getMesh()->getIndexCount() : geometry->getMesh()->getVertexCount()));
 			return true;
 		}
 	}
@@ -235,7 +238,8 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 			pSize = 1;
 
 		drawSurfels(context, node, rp, mesh, pSize, count);
-		currentComplexity += mesh->getVertexCount();
+		currentComplexity += count;
+		node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(count));
 
 		return true;
 	}
@@ -251,6 +255,17 @@ State* Renderer::clone() const {
 }
 
 State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	const SortedNodeSet tempNodes = std::move(*activeNodes);
+	currentComplexity = 0;
+	// use last frame
+	for(auto & activeNode : tempNodes) {
+		if(activeNode->isAttributeSet(NODE_COMPLEXITY))
+			currentComplexity += activeNode->getAttribute(NODE_COMPLEXITY)->toUnsignedInt();
+		if(maxComplexity > 0 && currentComplexity > maxComplexity)
+			activeNode->unsetAttribute(NODE_HANDLED);
+		else
+			activeNode->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
+	}
 	currentComplexity = 0;
 	frameTimer.reset();
 	debugTimer.reset();
@@ -264,12 +279,12 @@ void Renderer::doDisableState(FrameContext & context, Node * node, const RenderP
 	if(immediate)
 		return;
 
-	const SortedNodeSet tempNodes = std::move(*activeNodes);
-	activeNodes.reset();
+	//const SortedNodeSet tempNodes = std::move(*activeNodes);
+	//activeNodes.reset();
 
 	frameTimer.reset();
-	//TODO: limit frame time
-	for(auto & activeNode : tempNodes) {
+
+	for(auto & activeNode : *activeNodes) {
 		if(timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
 			return;
 		if(maxComplexity > 0 && currentComplexity > maxComplexity)
