@@ -37,7 +37,79 @@ namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
 
-Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false), immediate(false), waitForRender(false), timeLimit(0) {
+template<typename T, typename floatCompare, typename pointerCompare>
+class _DistanceCompare {
+
+	public:
+
+		//! (ctor)
+		_DistanceCompare(Geometry::Vec3 _referencePosition) :
+			referencePosition(std::move(_referencePosition)) {
+		}
+
+		//! (ctor)
+		_DistanceCompare(const _DistanceCompare & other) :
+			referencePosition(other.referencePosition) {
+		}
+
+	public:
+		/**
+		 *
+		 * @param 	a first object
+		 * @param 	b second object
+		 * @return 	true if the first object is closer (if order == BACK_TO_FRONT) to the reference position than the second
+		 * 			if the objects have equal distance to the reference position the pointers of the objects are compared
+		 *
+		 * @see		float Geometry::Box::getDistanceSquared(position)
+		 */
+		bool operator()(const T * a, const T * b) const {
+			volatile const float d1 = getDistance(a);
+			volatile const float d2 = getDistance(b);
+			volatile const float l1 = getLevel(b);
+			volatile const float l2 = getLevel(b);
+			return fltCmp(l1, l2) || ( !fltCmp(l2, l1) && (fltCmp(d1, d2) || ( !fltCmp(d2, d1) && ptrCmp(a, b))));
+		}
+
+	private:
+
+		Geometry::Vec3 referencePosition;
+
+		floatCompare fltCmp;
+		pointerCompare ptrCmp;
+
+		float getDistance(const Geometry::Vec3 * a) const {
+			return a->distanceSquared(referencePosition);
+		}
+
+		float getDistance(const Node * a) const {
+			return a->getWorldBB().getDistanceSquared(referencePosition);
+		}
+
+		float getDistance(const Geometry::Box * a) const {
+			return a->getDistanceSquared(referencePosition);
+		}
+
+		float getLevel(const Node * a) const {
+			float lvl = 0;
+			while(a->hasParent()) {
+				a = a->getParent();
+				++lvl;
+			}
+			return lvl;
+		}
+
+		//! Unimplemented, because the sort order must not be changed for an existing data structure.
+		_DistanceCompare & operator=(const _DistanceCompare & other);
+};
+
+struct SortedNodeSet: public std::set<Node *, _DistanceCompare<Node, std::less<volatile float>, std::less<const Node *> > > {
+	SortedNodeSet(const Geometry::Vec3 & pos) :
+		std::set<Node *, _DistanceCompare<Node, std::less<volatile float>, std::less<const Node *> > >(pos) {
+	}
+};
+
+Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false),
+		immediate(false), waitForRender(false), timeLimit(0), currentComplexity(0), maxComplexity(0) {
 	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
@@ -50,6 +122,8 @@ inline T clamp(T value, T min, T max) {
 
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
 	if(immediate && timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
+		return NodeRendererResult::NODE_HANDLED;
+	if(maxComplexity > 0 && currentComplexity > maxComplexity)
 		return NodeRendererResult::NODE_HANDLED;
 	RefineNode_t result = refineNodeFn(node);
 	switch (result) {
@@ -136,8 +210,10 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 				return false;
 			}
 			drawMesh(context, node, rp, mesh);
+			currentComplexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 			return true;
 		} else if(geometry->getMesh()->getVertexCount()>0) {
+			currentComplexity += geometry->getMesh()->isUsingIndexData() ? geometry->getMesh()->getIndexCount() : geometry->getMesh()->getVertexCount();
 			return true;
 		}
 	}
@@ -159,6 +235,7 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 			pSize = 1;
 
 		drawSurfels(context, node, rp, mesh, pSize, count);
+		currentComplexity += mesh->getVertexCount();
 
 		return true;
 	}
@@ -174,9 +251,10 @@ State* Renderer::clone() const {
 }
 
 State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	currentComplexity = 0;
 	frameTimer.reset();
 	debugTimer.reset();
-	activeNodes.reset(new DistanceSetF2B<Node>(context.getCamera()->getWorldPosition()));
+	activeNodes.reset(new SortedNodeSet(context.getCamera()->getWorldPosition()));
 	return NodeRendererState::doEnableState(context, node, rp);
 }
 
@@ -186,13 +264,15 @@ void Renderer::doDisableState(FrameContext & context, Node * node, const RenderP
 	if(immediate)
 		return;
 
-	const DistanceSetF2B<Node> tempNodes = std::move(*activeNodes);
+	const SortedNodeSet tempNodes = std::move(*activeNodes);
 	activeNodes.reset();
 
 	frameTimer.reset();
 	//TODO: limit frame time
 	for(auto & activeNode : tempNodes) {
 		if(timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
+			return;
+		if(maxComplexity > 0 && currentComplexity > maxComplexity)
 			return;
 		doDisplayNode(context, activeNode, rp);
 	}

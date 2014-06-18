@@ -13,7 +13,6 @@
 
 #include <MinSG/Core/States/NodeRendererState.h>
 #include <MinSG/Core/FrameContext.h>
-#include <MinSG/Helper/DistanceSorting.h>
 
 #include <Util/References.h>
 #include <Util/ReferenceCounter.h>
@@ -27,6 +26,8 @@ namespace MinSG {
 class Node;
 namespace ThesisSascha {
 class SurfelManager;
+
+struct SortedNodeSet;
 
 class Renderer : public NodeRendererState {
 	PROVIDES_TYPE_NAME(Renderer)
@@ -56,6 +57,8 @@ public:
 	void setWait(bool value) { this->waitForRender = value; }
 	void setTimeLimit(uint32_t time) { this->timeLimit = time; }
 	uint32_t getTimeLimit() { return this->timeLimit; }
+	void setMaxComplexity(uint32_t value) { this->maxComplexity = value; }
+	uint32_t getMaxComplexity() { return this->maxComplexity; }
 	float getDebugTime() const { return debugTimer.getMilliseconds(); }
 	float getFrameTime() const { return frameTimer.getMilliseconds(); }
 
@@ -74,11 +77,13 @@ private:
 
 	typedef std::vector<Util::Reference<Node>> NodeList_t;
 	//NodeList_t activeNodes;
-	std::unique_ptr<DistanceSetF2B<Node>> activeNodes;
+	std::unique_ptr<SortedNodeSet> activeNodes;
 	bool async;
 	bool immediate;
 	bool waitForRender;
 	uint32_t timeLimit;
+	uint32_t currentComplexity;
+	uint32_t maxComplexity;
 	Util::Timer frameTimer;
 	Util::Timer debugTimer;
 };
