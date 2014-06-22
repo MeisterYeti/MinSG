@@ -205,7 +205,8 @@ NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & co
 		}
 	}
 
-	if(node->findAttribute(SURFEL_ID) == nullptr) {
+	// don't render root node
+	if(node == root || node->findAttribute(SURFEL_ID) == nullptr) {
 		return NodeRendererResult::PASS_ON;
 	}
 
@@ -491,8 +492,8 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float c
 		++processed;
 		if(current->findAttribute(SURFEL_ID)) {
 			coverage *= current->findAttribute(SURFEL_REL_COVERING) ? current->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-			buildAndStoreSurfels(frameContext, textures, node, async);
+			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, current);
+			buildAndStoreSurfels(frameContext, textures, current, async);
 
 			if(abortUpdate(current, coverage)) {
 				processed = nodeCount;

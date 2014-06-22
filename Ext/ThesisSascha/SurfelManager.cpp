@@ -264,7 +264,8 @@ void SurfelManager::WorkerThread::flush(uint32_t timeLimit) {
  ******************************************/
 
 SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory) : basePath(basePath), worker(new WorkerThread(this)),
-		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), maxJobFlushTime(30), memoryLoadFactor(0.8f) {
+		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), maxBufferSize(maxMemory), bufferSize(0),
+		frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), maxJobFlushTime(30), memoryLoadFactor(0.8f) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
 	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
@@ -370,14 +371,17 @@ Mesh* SurfelManager::getMesh(Node* node) {
 
 void SurfelManager::doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async) {
 	auto it = idToCacheObject.find(id);
-	CacheObject* object;
+	CacheObject* object = nullptr;
 	if(it != idToCacheObject.end()) {
+		auto lock = Concurrency::createLock(*worker->memoryMutex);
 		object = it->second;
-		// TODO: update memory usage
-		object->state = CacheObject::Empty; // Mark as empty to reload mesh
+		object->mesh = mesh;
+		usedMemory -= object->memory;
+		object->memory = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
+		usedMemory += object->memory;
 	}
 
-	std::function<void()> writeFn = [mesh, filename] () {
+	std::function<void()> writeFn = [mesh, object, filename] () {
 		std::cout << "saving mesh " << filename.toString() << " ...";
 		Serialization::saveMesh(mesh, filename);
 		std::cout << "done" << std::endl;
@@ -460,9 +464,9 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIden
 			object->state = CacheObject::Empty;
 			return;
 		}
-		worker->swapQueue.push({object->id, object->mesh, mesh});
+		//worker->swapQueue.push({object->id, object->mesh, mesh});
+		object->mesh = mesh;
 		object->memory = mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
-		//object->mesh = mesh;
 		object->state = CacheObject::Loaded;
 		//updatedCacheObjects.push_back(object);
 		//TODO: distinction between main memory and graphics memory
@@ -482,18 +486,18 @@ void SurfelManager::update() {
 	while(!worker->mainThreadQueue.empty()) {
 		worker->mainThreadQueue.pop()();
 	}
-	while(!worker->swapQueue.empty()) {
+	/*while(!worker->swapQueue.empty()) {
 		WorkerThread::MeshSwap_t meshSwap = worker->swapQueue.pop();
 		auto it = idToCacheObject.find(meshSwap.id);
 		if(it != idToCacheObject.end()) {
 			meshSwap.source->swap(*meshSwap.target.get());
 		}
-	}
+	}*/
 	++frameNumber;
 	//TODO: update lru cache
 	auto lock = Concurrency::createLock(*worker->memoryMutex);
 	if(usedMemory >= maxMemory) {
-		//FIXME: std::sort throws segmentation fault
+		//FIXME: std::sort throws segmentation fault (probably because of weak ordering)
 		std::stable_sort(sortedCacheObjects.begin(), sortedCacheObjects.end(), CacheObjectCompare());
 		cacheObjectBuffer.clear();
 		while(!sortedCacheObjects.empty()) {
