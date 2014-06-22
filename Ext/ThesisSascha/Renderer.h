@@ -59,8 +59,8 @@ public:
 	uint32_t getTimeLimit() { return this->timeLimit; }
 	void setMaxComplexity(uint32_t value) { this->maxComplexity = value; }
 	uint32_t getMaxComplexity() { return this->maxComplexity; }
-	float getDebugTime() const { return debugTimer.getMilliseconds(); }
-	float getFrameTime() const { return frameTimer.getMilliseconds(); }
+	float getRenderTime() const { return renderTime; }
+	float getTraversalTime() const { return traversalTime; }
 
 	static void drawMesh(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh);
 	static void drawSurfels(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh, float pSize, uint32_t count);
@@ -85,7 +85,8 @@ private:
 	uint32_t currentComplexity;
 	uint32_t maxComplexity;
 	Util::Timer frameTimer;
-	Util::Timer debugTimer;
+	float traversalTime;
+	float renderTime;
 };
 
 } /* namespace ThesisSascha */

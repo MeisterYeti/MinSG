@@ -109,7 +109,7 @@ struct SortedNodeSet: public std::set<Node *, _DistanceCompare<Node, std::less<v
 };
 
 Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : manager(manager), NodeRendererState(channel), async(false),
-		immediate(false), waitForRender(false), timeLimit(0), currentComplexity(0), maxComplexity(0) {
+		immediate(false), waitForRender(false), timeLimit(0), currentComplexity(0), maxComplexity(0), renderTime(0), traversalTime(0) {
 	countFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return static_cast<uint32_t>(coverage*projSize*4); };
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
@@ -256,6 +256,7 @@ State* Renderer::clone() const {
 
 State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
 	const SortedNodeSet tempNodes = std::move(*activeNodes);
+	frameTimer.reset();
 	currentComplexity = 0;
 	// use last frame
 	for(auto & activeNode : tempNodes) {
@@ -267,31 +268,30 @@ State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node
 			activeNode->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
 	}
 	currentComplexity = 0;
-	frameTimer.reset();
-	debugTimer.reset();
 	activeNodes.reset(new SortedNodeSet(context.getCamera()->getWorldPosition()));
 	return NodeRendererState::doEnableState(context, node, rp);
 }
 
 void Renderer::doDisableState(FrameContext & context, Node * node, const RenderParam & rp) {
 	NodeRendererState::doDisableState(context, node, rp);
+	traversalTime = frameTimer.getMilliseconds();
+	renderTime = traversalTime;
 
 	if(immediate)
 		return;
 
 	//const SortedNodeSet tempNodes = std::move(*activeNodes);
 	//activeNodes.reset();
-
 	frameTimer.reset();
 
 	for(auto & activeNode : *activeNodes) {
-		if(timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
-			return;
-		if(maxComplexity > 0 && currentComplexity > maxComplexity)
-			return;
+		if( (timeLimit > 0 && frameTimer.getMilliseconds() > timeLimit)
+				|| (maxComplexity > 0 && currentComplexity > maxComplexity))
+			break;
 		doDisplayNode(context, activeNode, rp);
 	}
 	//activeNodes.clear();
+	renderTime = frameTimer.getMilliseconds();
 }
 
 } /* namespace ThesisSascha */

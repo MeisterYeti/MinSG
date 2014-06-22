@@ -96,6 +96,8 @@ private:
 	Util::Reference<Preprocessor> preprocessor;
 	uint64_t maxMemory;
 	uint64_t usedMemory;
+	uint64_t maxBufferSize;
+	uint64_t bufferSize;
 	uint32_t frameNumber;
 	uint32_t maxJobNumber;
 	uint32_t maxJobFlushTime;
@@ -105,7 +107,7 @@ private:
 	typedef std::unordered_map<Util::StringIdentifier, CacheObject*> IdToCacheMap_t;
 	SortedCache_t sortedCacheObjects;
 	SortedCache_t cacheObjectBuffer;
-	SortedCache_t updatedCacheObjects;
+	SortedCache_t pendingCacheObjects;
 	IdToCacheMap_t idToCacheObject;
 	std::deque<CacheObject*> cacheObjectPool;
 };
