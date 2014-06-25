@@ -23,6 +23,7 @@
 #include <list>
 #include <functional>
 #include <deque>
+#include <atomic>
 
 namespace Rendering {
 class Mesh;
@@ -35,7 +36,6 @@ class GeometryNode;
 namespace ThesisSascha {
 
 class Preprocessor;
-class CacheObject;
 
 class SurfelManager : public Util::ReferenceCounter<SurfelManager> {
 	PROVIDES_TYPE_NAME(SurfelManager)
@@ -45,16 +45,14 @@ public:
 	};
 
 	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
-	SurfelManager(const Util::FileName& basePath, uint64_t maxMemory);
+	SurfelManager(const Util::FileName& basePath, uint64_t maxMemory, uint64_t maxReservedMemory);
 	virtual ~SurfelManager();
 
 	void storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool async = false);
-	MeshLoadResult_t loadSurfel(Node* node, float projSize, float distance, bool async = false);
-	Rendering::Mesh* getSurfel(Node* node);
+	MeshLoadResult_t fetchSurfel(Util::Reference<Rendering::Mesh>& out, Node* node, float projSize, float distance, bool async = false, bool force=false);
 
 	void storeMesh(GeometryNode* node, bool async = true);
-	MeshLoadResult_t loadMesh(GeometryNode* node, float projSize, float distance, bool async = false);
-	Rendering::Mesh* getMesh(Node* node);
+	MeshLoadResult_t fetchMesh(Util::Reference<Rendering::Mesh>& out, GeometryNode* node, float projSize, float distance, bool async = false, bool force=false);
 
 	bool isCached(Node* node);
 
@@ -70,9 +68,10 @@ public:
 	void executeAsync(const std::function<void()>& function);
 	void executeOnMainThread(const std::function<void()>& function);
 
-	uint64_t getUsedMemory() const { return usedMemory; }
+	uint64_t getUsedMemory() const { return usedMemory+reservedMemory; }
 	uint64_t getMaxMemory() const { return maxMemory; }
 	void setMaxMemory(uint64_t value) { maxMemory = value; }
+	void setMaxReservedMemory(uint64_t value) { maxReservedMemory = value; }
 	void setMaxJobs(uint32_t jobs)  { maxJobNumber = jobs; }
 	uint32_t getMaxJobs() const { return maxJobNumber; }
 	void setMemoryLoadFactor(float value)  { memoryLoadFactor = value; }
@@ -82,8 +81,10 @@ public:
 	void setPriorityOrder(const std::vector<uint32_t>& order);
 private:
 	class WorkerThread;
+	class CacheObject;
 	void doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async);
-	MeshLoadResult_t doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, float distance, bool async);
+	MeshLoadResult_t doFetchMesh(const Util::StringIdentifier& id, bool isSurfel, uint32_t level, float projSize, float distance, bool async);
+	MeshLoadResult_t doLoadMesh(CacheObject* object, bool async);
 
 	CacheObject* createCacheObject(const Util::StringIdentifier& id);
 	CacheObject* createCacheObject(const CacheObject* copyOf);
@@ -94,16 +95,16 @@ private:
 	WorkerThread* worker;
 
 	Util::Reference<Preprocessor> preprocessor;
-	uint64_t maxMemory;
-	uint64_t usedMemory;
-	uint64_t maxBufferSize;
-	uint64_t bufferSize;
+	std::atomic<uint64_t> maxMemory;
+	std::atomic<uint64_t> usedMemory;
+	std::atomic<uint64_t> reservedMemory;
+	std::atomic<uint64_t> maxReservedMemory;
 	uint32_t frameNumber;
 	uint32_t maxJobNumber;
 	uint32_t maxJobFlushTime;
 	float memoryLoadFactor;
 
-	typedef std::vector<CacheObject*> SortedCache_t;
+	typedef std::deque<CacheObject*> SortedCache_t;
 	typedef std::unordered_map<Util::StringIdentifier, CacheObject*> IdToCacheMap_t;
 	SortedCache_t sortedCacheObjects;
 	SortedCache_t cacheObjectBuffer;

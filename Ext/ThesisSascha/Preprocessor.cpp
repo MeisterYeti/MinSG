@@ -188,6 +188,7 @@ private:
 };
 
 NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & context, Node * node, const RenderParam & rp) {
+	processor->manager->update();
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node->isInstance() ? node->getPrototype() : node);
 	if(geometry) {
 		if(geometry->getMesh()->getVertexCount() > 0) {
@@ -195,11 +196,12 @@ NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & co
 		} else if(node->findAttribute(MESH_ID)) {
 			SurfelManager::MeshLoadResult_t result;
 			// force mesh loading
-			while((result = processor->manager->loadMesh(geometry,9999,0,false) ) == SurfelManager::Pending) {
-				processor->manager->update();
-			}
-			if(result == SurfelManager::Success) {
-				Renderer::drawMesh(context, node, rp, processor->manager->getMesh(node));
+			Reference<Mesh> mesh;
+			if( processor->manager->fetchMesh(mesh,geometry,9999,0,false, true) == SurfelManager::Success) {
+				if(mesh.isNull()) {
+					return NodeRendererResult::PASS_ON;
+				}
+				Renderer::drawMesh(context, node, rp, mesh.get() );
 				return NodeRendererResult::PASS_ON;
 			}
 		}
@@ -224,16 +226,13 @@ NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & co
 
 	SurfelManager::MeshLoadResult_t result;
 	// force mesh loading
-	while((result = processor->manager->loadSurfel(node,9999,0,false) ) == SurfelManager::Pending) {
-		processor->manager->update();
-	}
-	if(result == SurfelManager::Success) {
-		Mesh* mesh = processor->manager->getSurfel(node);
-		if(mesh == nullptr) {
+	Reference<Mesh> mesh;
+	if( processor->manager->fetchSurfel(mesh,node,9999,0,false, true) == SurfelManager::Success) {
+		if(mesh.isNull()) {
 			return renderResult;
 		}
 		uint32_t count = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
-		Renderer::drawSurfels(context, node, rp, mesh , 4, count);
+		Renderer::drawSurfels(context, node, rp, mesh.get() , 4, count);
 		return renderResult;
 	}
 	return renderResult;
@@ -601,6 +600,25 @@ uint32_t Preprocessor::getMaxAbsSurfels()const			{	return surfelGenerator->getMa
 float Preprocessor::getReusalRate()const				{	return surfelGenerator->getReusalRate();	}
 void Preprocessor::setMaxAbsSurfels(uint32_t i)			{	surfelGenerator->setMaxAbsSurfels(i);	}
 void Preprocessor::setReusalRate(float f)				{	surfelGenerator->setReusalRate(f);	}
+
+Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContext, Node* node) {
+	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
+	if(textures.size() < 4)
+		return nullptr;
+	static Util::Timer timer;
+	RenderingContext& rc = frameContext.getRenderingContext();
+	Util::Reference<Util::PixelAccessor> pos = TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get());
+	Util::Reference<Util::PixelAccessor> normal = TextureUtils::createColorPixelAccessor(rc, textures[NORMAL].get());
+	Util::Reference<Util::PixelAccessor> color = TextureUtils::createColorPixelAccessor(rc, textures[COLOR].get());
+	Util::Reference<Util::PixelAccessor> size = TextureUtils::createColorPixelAccessor(rc, textures[SIZE].get());
+
+	timer.reset();
+	std::cout << "building surfels... " << std::endl;
+	SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
+	std::cerr << std::flush;
+	std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
+	return nullptr;
+}
 
 } /* namespace ThesisSascha */
 } /* namespace MinSG */

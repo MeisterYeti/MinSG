@@ -67,7 +67,7 @@ public:
 protected:
 	stateResult_t doEnableState(FrameContext & context, Node *, const RenderParam & rp) override;
 	void doDisableState(FrameContext & context, Node * node, const RenderParam & rp) override;
-	bool doDisplayNode(FrameContext & context, Node * node, const RenderParam & rp);
+	bool doDisplayNode(FrameContext & context, Node * node, const RenderParam & rp, bool force=false);
 private:
 	Util::Reference<SurfelManager> manager;
 

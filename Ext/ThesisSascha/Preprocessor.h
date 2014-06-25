@@ -69,6 +69,8 @@ public:
 	void setMaxAbsSurfels(uint32_t i);
 	void setReusalRate(float f);
 	void setMaxComplexity(uint32_t value) { maxComplexity = value; }
+
+	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Node* node);
 private:
 	class InternalRenderer;
 

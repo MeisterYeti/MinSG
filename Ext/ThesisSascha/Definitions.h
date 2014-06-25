@@ -21,7 +21,7 @@ namespace ThesisSascha {
 static const uint32_t MAX_JOB_NUMBER = 100;
 static const uint32_t MAX_FLUSH_TIME = 30;
 static const size_t INITIAL_POOL_SIZE = 200;
-static const size_t MIN_STREAM_FILE_SIZE = 1024*1024;
+static const size_t MIN_STREAM_FILE_SIZE = 1024 * 1024;
 
 typedef Util::WrapperAttribute<Util::StringIdentifier> StringIDAttribute_t;
 const std::string GATypeNameStringIdentifier("StringIdentifier");
@@ -45,7 +45,6 @@ static const Util::StringIdentifier CHILDREN_LOADED(NodeAttributeModifier::creat
 
 }
 }
-
 
 #endif /* DEFINITIONS_H_ */
 #endif /* MINSG_EXT_THESISSASCHA */

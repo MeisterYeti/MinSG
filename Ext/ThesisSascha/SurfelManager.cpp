@@ -31,6 +31,9 @@
 
 #include <iostream>
 #include <cstdlib>
+#include <atomic>
+
+#define LOCK(mutex) auto lock = Concurrency::createLock(mutex);
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -93,7 +96,7 @@ inline FileName buildMeshFilename(const FileName& basePath, const StringIdentifi
  * CacheObject class
  ******************************************/
 
-class CacheObject {
+class SurfelManager::CacheObject {
 public:
 	enum Priority {
 		LRU, Usage, Distance, ProjSize, LevelTB, LevelBT, Memory
@@ -102,32 +105,30 @@ public:
 	typedef std::function<bool(const CacheObject & a, const CacheObject & b)> CompareFn_t;
 	static std::vector<CompareFn_t> priorityFunctions;
 	static std::vector<uint32_t> priorityOrder;
+	//static std::unique_ptr<Concurrency::Mutex> objectMutex;
+	std::unique_ptr<Concurrency::Mutex> localMutex;
 
+	// Making everything atomic because i'm paranoid
+	//std::atomic<StringIdentifier> id;
 	StringIdentifier id;
-	uint32_t lru;
-	uint16_t usage;
-	uint16_t level;
-	uint32_t memory;
-	float projSize;
-	float minDistance;
+	std::atomic<uint32_t> lru;
+	std::atomic<uint16_t> usage;
+	std::atomic<uint16_t> level;
+	std::atomic<uint32_t> memory;
+	std::atomic<float> projSize;
+	std::atomic<float> minDistance;
+	//std::atomic<Reference<Mesh>> mesh; // can Util::Reference be used with atomic?
 	Reference<Mesh> mesh;
 	enum State_t {
-		Empty, Pending, Loaded, Abort
-	} state;
-	CacheObject() : id(), lru(0), usage(0), level(0), memory(0), projSize(0), minDistance(0), mesh(), state(Empty) {}
-	CacheObject(const StringIdentifier& id) : id(id), lru(0), usage(0), level(0), projSize(0), minDistance(0), memory(0), mesh(), state(Empty) {}
+		Empty, Pending, Loading, Loaded, Abort
+	};
+	std::atomic<State_t> state;
+	std::atomic<bool> surfel;
+public:
+	CacheObject() : localMutex(Concurrency::createMutex()), id(), lru(0), usage(0), level(0), memory(0), projSize(0), minDistance(0), mesh(), state(Empty), surfel(false) {}
+	CacheObject(const StringIdentifier& id) : localMutex(Concurrency::createMutex()), id(id), lru(0), usage(0), level(0), projSize(0), minDistance(0), memory(0), mesh(), state(Empty), surfel(false) {}
 
-	//TODO: better priority order
 	bool operator < (const CacheObject & other) const {
-		/*return //(state == Empty) || (state == Loaded && other.state == Pending) || ((other.state != Empty)
-				//state < other.state || (!(other.state < state)
-				(true
-				&& (lru < other.lru || (!(other.lru < lru)
-				&& (minDistance > other.minDistance || (!(other.minDistance > minDistance)
-				//&& (level < other.level || (!(other.level < level)
-				&& (projSize < other.projSize || (!(other.projSize < projSize)
-				&& usage < other.usage))
-				)))));*/
 		for(uint32_t p : priorityOrder) {
 			CompareFn_t fn = priorityFunctions[p];
 			if(fn(*this,other)) {
@@ -147,12 +148,19 @@ public:
 				&& projSize == other.projSize; // should not be too much of a problem for sorting
 	}
 
-	inline bool isEmpty() { return state == Empty; }
-	inline bool isPending() { return state == Pending; }
-	inline bool isLoaded() { return state == Loaded; }
-	inline bool isAborted() { return state == Abort; }
+	inline bool isEmpty() const { return state == Empty; }
+	inline bool isPending() const { return state == Pending; }
+	inline bool isLoading() const { return state == Loading; }
+	inline bool isLoaded() const { return state == Loaded; }
+	inline bool isAborted() const { return state == Abort; }
+	inline bool isSurfel() const { return surfel; }
 
-	void swap(CacheObject* obj) {
+	inline const StringIdentifier& getId() const { return id; }
+	inline void setId(const StringIdentifier& id_) { id = id_; }
+	inline Mesh* getMesh() const { LOCK(*localMutex); return mesh.get(); }
+	inline void setMesh(Mesh* m) { LOCK(*localMutex); mesh = m; }
+
+	/*void swap(CacheObject* obj) {
 		std::swap(this->id, obj->id);
 		std::swap(this->lru, obj->lru);
 		std::swap(this->usage, obj->usage);
@@ -162,11 +170,12 @@ public:
 		std::swap(this->state, obj->state);
 		std::swap(this->mesh, obj->mesh);
 		std::swap(this->memory, obj->memory);
-	}
+		std::swap(this->surfel, obj->surfel);
+	}*/
 
 };
 
-std::vector<CacheObject::CompareFn_t> CacheObject::priorityFunctions {
+std::vector<SurfelManager::CacheObject::CompareFn_t> SurfelManager::CacheObject::priorityFunctions {
 	[](const CacheObject & a, const CacheObject & b) { return a.lru < b.lru; },
 	[](const CacheObject & a, const CacheObject & b) { return a.usage < b.usage; },
 	[](const CacheObject & a, const CacheObject & b) { return a.minDistance > b.minDistance; },
@@ -176,13 +185,16 @@ std::vector<CacheObject::CompareFn_t> CacheObject::priorityFunctions {
 	[](const CacheObject & a, const CacheObject & b) { return a.memory < b.memory; }
 };
 
-std::vector<uint32_t> CacheObject::priorityOrder {
+std::vector<uint32_t> SurfelManager::CacheObject::priorityOrder {
 	CacheObject::LRU, CacheObject::Distance, CacheObject::ProjSize, CacheObject::Usage
 };
 
-struct CacheObjectCompare {
+//std::unique_ptr<Concurrency::Mutex> SurfelManager::CacheObject::objectMutex(Concurrency::createMutex());
 
-	bool operator()(const CacheObject * a, const CacheObject * b) const {
+template<class Type>
+struct ObjectCompare {
+
+	bool operator()(const Type * a, const Type * b) const {
 		if(a == nullptr || b == nullptr) {
 			WARN("Null cache object");
 			return true;
@@ -206,7 +218,7 @@ public:
 		Reference<Mesh> source;
 	};
 
-	WorkerThread(SurfelManager* manager) : closed(false), manager(manager), memoryMutex(Concurrency::createMutex()) { start(); };
+	WorkerThread(SurfelManager* manager) : closed(false), manager(manager) { start(); };
 	virtual ~WorkerThread() = default;
 	void close();
 	void executeAsync(const std::function<void()>& function);
@@ -218,9 +230,7 @@ protected:
 	bool closed;
 	WeakPointer<SurfelManager> manager;
 public:
-	SyncQueue<MeshSwap_t> swapQueue;
 	SyncQueue<std::function<void()>> mainThreadQueue;
-	std::unique_ptr<Concurrency::Mutex> memoryMutex;
 };
 
 void SurfelManager::WorkerThread::close() {
@@ -263,8 +273,8 @@ void SurfelManager::WorkerThread::flush(uint32_t timeLimit) {
  * SurfelManager class
  ******************************************/
 
-SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory) : basePath(basePath), worker(new WorkerThread(this)),
-		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), maxBufferSize(maxMemory), bufferSize(0),
+SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory, uint64_t maxReservedMemory) : basePath(basePath), worker(new WorkerThread(this)),
+		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), reservedMemory(0), maxReservedMemory(maxReservedMemory),
 		frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), maxJobFlushTime(30), memoryLoadFactor(0.8f) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
@@ -293,14 +303,27 @@ void SurfelManager::storeSurfel(Node* node, const SurfelInfo_t& surfelInfo, bool
 	doStoreMesh(id, buildSurfelFilename(basePath, id), surfelInfo.first.get(), async);
 }
 
-SurfelManager::MeshLoadResult_t SurfelManager::loadSurfel(Node* node, float projSize, float distance, bool async) {
+SurfelManager::MeshLoadResult_t SurfelManager::fetchSurfel(Util::Reference<Rendering::Mesh>& out, Node* node, float projSize, float distance, bool async, bool force) {
 	if(node->isInstance())
 		node = node->getPrototype();
 	if(!node->isAttributeSet(SURFEL_ID))
 		return Failed;
 	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
 	uint32_t level = node->isAttributeSet(NODE_LEVEL) ? node->findAttribute(NODE_LEVEL)->toUnsignedInt() : 0;
-	return doLoadMesh(id, buildSurfelFilename(basePath, id), level, projSize, distance, async);
+	if(idToCacheObject.count(id) > 0)
+		out = idToCacheObject[id]->isLoaded() ? idToCacheObject[id]->getMesh() : nullptr;
+	if(out != nullptr)
+		node->setAttribute(SURFEL_COUNT, GenericAttribute::createNumber(out->isUsingIndexData() ? out->getIndexCount() : out->getVertexCount()));
+	auto result = doFetchMesh(id, true, level, projSize, distance, async);
+	if(force) {
+		if(idToCacheObject.count(id) <= 0)
+			return Failed;
+		if(doLoadMesh(idToCacheObject[id], false) != Success)
+			return Failed;
+		out = idToCacheObject[id]->isLoaded() ? idToCacheObject[id]->getMesh() : nullptr;
+		return out == nullptr ? Failed : Success;
+	}
+	return result;
 }
 
 bool SurfelManager::isCached(Node* node) {
@@ -331,16 +354,6 @@ bool SurfelManager::isCached(Node* node) {
 	return false;
 }
 
-Mesh* SurfelManager::getSurfel(Node* node) {
-	if(node->isInstance())
-		node = node->getPrototype();
-	const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
-	Mesh* mesh = idToCacheObject.count(id) > 0 ? idToCacheObject[id]->mesh.get() : nullptr;
-	if(mesh != nullptr)
-		node->setAttribute(SURFEL_COUNT, GenericAttribute::createNumber(mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount()));
-	return mesh;
-}
-
 void SurfelManager::storeMesh(GeometryNode* node, bool async) {
 	if(node->isInstance())
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
@@ -352,33 +365,45 @@ void SurfelManager::storeMesh(GeometryNode* node, bool async) {
 	doStoreMesh(id, buildMeshFilename(basePath, id), node->getMesh(), async);
 }
 
-SurfelManager::MeshLoadResult_t SurfelManager::loadMesh(GeometryNode* node, float projSize, float distance, bool async) {
+SurfelManager::MeshLoadResult_t SurfelManager::fetchMesh(Util::Reference<Rendering::Mesh>& out, GeometryNode* node, float projSize, float distance, bool async, bool force) {
 	if(node->isInstance())
 		node = dynamic_cast<GeometryNode*>(node->getPrototype()); // should not be null
 	if(!node->isAttributeSet(MESH_ID))
 		return Failed;
 	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
 	uint32_t level = node->isAttributeSet(NODE_LEVEL) ? node->findAttribute(NODE_LEVEL)->toUnsignedInt() : 0;
-	return doLoadMesh(id, buildMeshFilename(basePath, id), level, projSize, distance, async);
-}
-
-Mesh* SurfelManager::getMesh(Node* node) {
-	if(node->isInstance())
-		node = node->getPrototype();
-	const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
-	return idToCacheObject.count(id) > 0 ? idToCacheObject[id]->mesh.get() : nullptr;
+	if(idToCacheObject.count(id) > 0)
+		out = idToCacheObject[id]->isLoaded() ? idToCacheObject[id]->getMesh() : nullptr;
+	auto result = doFetchMesh(id, false, level, projSize, distance, async);
+	if(force) {
+		if(idToCacheObject.count(id) <= 0)
+			return Failed;
+		if(doLoadMesh(idToCacheObject[id], false) != Success)
+			return Failed;
+		out = idToCacheObject[id]->isLoaded() ? idToCacheObject[id]->getMesh() : nullptr;
+		return out == nullptr ? Failed : Success;
+	}
+	return result;
 }
 
 void SurfelManager::doStoreMesh(const Util::StringIdentifier& id, const Util::FileName& filename, Rendering::Mesh* mesh, bool async) {
 	auto it = idToCacheObject.find(id);
 	CacheObject* object = nullptr;
 	if(it != idToCacheObject.end()) {
-		auto lock = Concurrency::createLock(*worker->memoryMutex);
+
 		object = it->second;
-		object->mesh = mesh;
-		usedMemory -= object->memory;
-		object->memory = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
-		usedMemory += object->memory;
+		uint64_t mem = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
+		if(object->isLoaded()) {
+			usedMemory -= object->memory;
+		} else if(object->isPending() || object->isLoading()) {
+			object->state = CacheObject::Loaded;
+			reservedMemory -= object->memory;
+		} else {
+			object->state = CacheObject::Loaded;
+		}
+		object->memory = mem;
+		usedMemory += mem;
+		object->setMesh(mesh);
 	}
 
 	std::function<void()> writeFn = [mesh, object, filename] () {
@@ -395,9 +420,9 @@ void SurfelManager::doStoreMesh(const Util::StringIdentifier& id, const Util::Fi
 	}
 }
 
-SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIdentifier& id, const Util::FileName& filename, uint32_t level, float projSize, float distance, bool async) {
-	auto it = idToCacheObject.find(id);
+SurfelManager::MeshLoadResult_t SurfelManager::doFetchMesh(const Util::StringIdentifier& id, bool isSurfel, uint32_t level, float projSize, float distance, bool async) {
 	CacheObject* object = nullptr;
+	auto it = idToCacheObject.find(id);
 	if(it != idToCacheObject.end()) {
 		object = it->second;
 		object->level = level; //TODO: problematic with instancing. use min level instead?
@@ -409,117 +434,167 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(const Util::StringIden
 			object->usage = 1;
 		}
 		object->lru = frameNumber;
-		if(object->isLoaded() && object->mesh.isNotNull()) {
+		if(object->isLoaded() && object->getMesh()) {
 			return Success;
-		} else if(object->isPending()) {
+		} else if(object->isPending() || object->isEmpty()) {
 			return Pending;
 		}
-		//WARN("object empty ");
 		return Failed;
 	}
-	/*{
-		auto lock = Concurrency::createLock(*worker->memoryMutex);
-		if(usedMemory >= maxMemory) {
-			return Pending;
-		}
-	}*/
-	if(!FileUtils::isFile(filename)) {
-		return Failed;
-	}
-	if(object == nullptr) {
-		object = createCacheObject(id);
-		object->level = level; //TODO: problematic with instancing. use min level instead?
-		object->usage = 1;
-		object->projSize = projSize;
-		object->minDistance = distance;
-		object->lru = frameNumber;
-		object->mesh = new Mesh();
-		object->state = CacheObject::Pending;
-		object->memory = 0;
 
-		idToCacheObject[id] = object;
-		sortedCacheObjects.push_back(object);
+	object = createCacheObject(id);
+	object->level = level; //TODO: problematic with instancing. use min level instead?
+	object->usage = 1;
+	object->projSize = projSize;
+	object->minDistance = distance;
+	object->lru = frameNumber;
+	object->setMesh(new Mesh());
+	object->state = CacheObject::Pending;
+	object->memory = 0;
+	object->surfel = isSurfel;
+
+	idToCacheObject[id] = object;
+	pendingCacheObjects.push_back(object);
+	return Pending;
+}
+
+SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(CacheObject* object, bool async) {
+	if(!object || object->isEmpty() || object->isAborted())
+		return Failed;
+	if(object->isLoading())
+		return Pending;
+
+	const FileName& filename = object->isSurfel() ? buildSurfelFilename(basePath, object->getId()) : buildMeshFilename(basePath, object->getId());
+	if(!FileUtils::isFile(filename)) {
+		WARN("File '" + filename.toString() + "' does not exist.");
+		return Failed;
 	}
+
+	// estimate memory usage
+	uint64_t fileSize = FileUtils::fileSize(filename);
+	reservedMemory += fileSize;
+	object->memory = fileSize; // only estimates the real memory consumption
 
 	std::function<void()> readFn = [this, object, filename] () {
-		{
-			auto lock = Concurrency::createLock(*worker->memoryMutex);
-			if(object->isAborted() || usedMemory > maxMemory) {
-				object->state = CacheObject::Empty;
-				return;
-			}
-		}
-		//std::cout << "loading mesh " << filename.toString() << " ..." << std::flush;
-		//Reference<Mesh> mesh = Serialization::loadMesh(filename);
-		// TODO: use this method only for surfels (faster for small files?)
-		std::string data = FileUtils::getFileContents(filename);
-		Reference<Mesh> mesh = Serialization::loadMesh("mmf", data);
-		//std::cout << "done" << std::endl;
-		if(mesh.isNull()) {
-			WARN("Could not load mesh: " + filename.toString());
+		if(object->isAborted()) {
+		//if(object->isAborted() || usedMemory+reservedMemory > maxMemory) {
+			object->state = CacheObject::Pending;
 			return;
 		}
-		auto lock = Concurrency::createLock(*worker->memoryMutex);
-		if(object->isAborted()) {
+
+		//Reference<Mesh> mesh = Serialization::loadMesh(filename);
+		// TODO: use this method only for surfels (faster for smaller files?)
+		std::string data = FileUtils::getFileContents(filename);
+		Reference<Mesh> mesh = Serialization::loadMesh("mmf", data);
+
+		if(mesh.isNull()) {
+			WARN("Could not load mesh: " + filename.toString());
 			object->state = CacheObject::Empty;
 			return;
 		}
-		//worker->swapQueue.push({object->id, object->mesh, mesh});
-		object->mesh = mesh;
+		if(object->isAborted()) {
+			object->state = CacheObject::Pending;
+			return;
+		}
+		object->setMesh(mesh.get());
+		reservedMemory -= object->memory;
 		object->memory = mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
+		reservedMemory += object->memory;
 		object->state = CacheObject::Loaded;
-		//updatedCacheObjects.push_back(object);
-		//TODO: distinction between main memory and graphics memory
-		usedMemory += object->memory;
-		//std::cout << "memory usage: " << usedMemory << "/" << maxMemory << std::endl;
 	};
+	object->state = CacheObject::Loading;
 
 	if(async) {
 		executeAsync(readFn);
 	} else {
 		readFn();
+		return Success;
 	}
 	return Pending;
 }
 
 void SurfelManager::update() {
+	static ObjectCompare<CacheObject> cacheCmp;
 	while(!worker->mainThreadQueue.empty()) {
 		worker->mainThreadQueue.pop()();
 	}
-	/*while(!worker->swapQueue.empty()) {
-		WorkerThread::MeshSwap_t meshSwap = worker->swapQueue.pop();
-		auto it = idToCacheObject.find(meshSwap.id);
-		if(it != idToCacheObject.end()) {
-			meshSwap.source->swap(*meshSwap.target.get());
-		}
-	}*/
 	++frameNumber;
-	//TODO: update lru cache
-	auto lock = Concurrency::createLock(*worker->memoryMutex);
-	if(usedMemory >= maxMemory) {
+
+	// Sort pending objects and load by priority
+	//FIXME: std::sort throws segmentation fault (probably because of weak ordering)
+	std::stable_sort(pendingCacheObjects.begin(), pendingCacheObjects.end(), cacheCmp);
+	cacheObjectBuffer.clear();
+	while(!pendingCacheObjects.empty()) {
+		CacheObject* object = pendingCacheObjects.front();
+		pendingCacheObjects.pop_front();
+		if(object->isEmpty()) {
+			idToCacheObject.erase(object->getId());
+			reservedMemory -= object->memory;
+			releaseCacheObject(object);
+		} else if(object->isLoaded()) {
+			reservedMemory -= object->memory;
+			usedMemory += object->memory;
+			sortedCacheObjects.push_back(object);
+		} else if(object->isPending()) {
+			// Load mesh unless max pending memory exceeded
+			if(reservedMemory < maxReservedMemory && usedMemory+reservedMemory<=maxMemory) {
+				if(doLoadMesh(object, true) == Failed)
+					object->state = CacheObject::Empty;
+			}
+			cacheObjectBuffer.push_back(object);
+		} else if(object->isLoading()) {
+			cacheObjectBuffer.push_back(object);
+		}
+	}
+	pendingCacheObjects.swap(cacheObjectBuffer);
+
+
+	// if maximum memory is exceeded, sort cache and remove lru
+	if(usedMemory+reservedMemory >= maxMemory * memoryLoadFactor) {
 		//FIXME: std::sort throws segmentation fault (probably because of weak ordering)
-		std::stable_sort(sortedCacheObjects.begin(), sortedCacheObjects.end(), CacheObjectCompare());
+		std::stable_sort(sortedCacheObjects.begin(), sortedCacheObjects.end(), cacheCmp);
 		cacheObjectBuffer.clear();
 		while(!sortedCacheObjects.empty()) {
 			CacheObject* object = sortedCacheObjects.back();
 			sortedCacheObjects.pop_back();
-			if(object->isEmpty()) {
-				idToCacheObject.erase(object->id);
-				releaseCacheObject(object);
-			} else if(object->isAborted()) {
-				// do nothing
-			} else if(usedMemory >= maxMemory * memoryLoadFactor) {
-				usedMemory -= object->memory;
-				//std::cout << "released " << object->id.toString() << ". memory usage: " << usedMemory << "/" << maxMemory << std::endl;
-				if(object->isPending()) {
-					object->mesh = nullptr;
-					object->state = CacheObject::Abort;
+
+			if(object->isLoaded()) {
+				if(usedMemory+reservedMemory >= maxMemory * memoryLoadFactor) {
+					// only remove object from cache when there is an pending object with higher priority
+					CacheObject* firstPending = pendingCacheObjects.empty() ? nullptr : pendingCacheObjects.front();
+					if(firstPending && cacheCmp(firstPending, object)) {
+						idToCacheObject.erase(object->getId());
+						usedMemory -= object->memory;
+						releaseCacheObject(object);
+					} else {
+						// lru object in cache has greater priority than all pending objects,
+						// therefore we can assume that this is true for all objects in the cache
+						if(cacheObjectBuffer.empty()) {
+							cacheObjectBuffer.swap(sortedCacheObjects);
+						} else {
+							cacheObjectBuffer.push_front(object);
+							if(cacheObjectBuffer.size()<sortedCacheObjects.size()) {
+								while(!sortedCacheObjects.empty()) {
+									sortedCacheObjects.push_back(sortedCacheObjects.front());
+									sortedCacheObjects.pop_front();
+								}
+								cacheObjectBuffer.swap(sortedCacheObjects);
+							} else {
+								while(!sortedCacheObjects.empty()) {
+									cacheObjectBuffer.push_front(sortedCacheObjects.back());
+									sortedCacheObjects.pop_back();
+								}
+							}
+						}
+					}
 				} else {
-					idToCacheObject.erase(object->id);
-					releaseCacheObject(object);
+					cacheObjectBuffer.push_front(object);
 				}
 			} else {
-				cacheObjectBuffer.push_back(object);
+				// move pending objects back to pending queue
+				pendingCacheObjects.push_back(object);
+				reservedMemory += object->memory;
+				usedMemory -= object->memory;
 			}
 		}
 		sortedCacheObjects.swap(cacheObjectBuffer);
@@ -527,14 +602,20 @@ void SurfelManager::update() {
 }
 
 void SurfelManager::clear() {
-	update();
-	auto lock = Concurrency::createLock(*worker->memoryMutex);
+	flush();
+	//auto lock = Concurrency::createLock(*worker->memoryMutex);
 	cacheObjectBuffer.clear();
 	while(!sortedCacheObjects.empty()) {
 		CacheObject* object = sortedCacheObjects.back();
 		sortedCacheObjects.pop_back();
 		releaseCacheObject(object);
 	}
+	while(!pendingCacheObjects.empty()) {
+		CacheObject* object = pendingCacheObjects.back();
+		pendingCacheObjects.pop_back();
+		releaseCacheObject(object);
+	}
+	reservedMemory = 0;
 	usedMemory = 0;
 	frameNumber = 0;
 }
@@ -552,25 +633,25 @@ void SurfelManager::executeOnMainThread(const std::function<void()>& function) {
 	worker->mainThreadQueue.push(function);
 }
 
-CacheObject* SurfelManager::createCacheObject(const Util::StringIdentifier& id) {
+SurfelManager::CacheObject* SurfelManager::createCacheObject(const Util::StringIdentifier& id) {
 	if(cacheObjectPool.empty())
 		return new CacheObject(id); //TODO: allocate space for multiple objects?
 	CacheObject* object = cacheObjectPool.back();
 	cacheObjectPool.pop_back();
-	object->id = id;
+	object->setId(id);
 	return object;
 }
 
-CacheObject* SurfelManager::createCacheObject(const CacheObject* copyOf) {
-	CacheObject* object = createCacheObject(copyOf->id);
-	object->level = copyOf->level;
-	object->lru = copyOf->lru;
-	object->mesh = copyOf->mesh;
-	object->minDistance = copyOf->minDistance;
-	object->projSize = copyOf->projSize;
-	object->state = copyOf->state;
-	object->usage = copyOf->usage;
-	object->memory = copyOf->memory;
+SurfelManager::CacheObject* SurfelManager::createCacheObject(const CacheObject* copyOf) {
+	CacheObject* object = createCacheObject(copyOf->getId());
+	object->level = copyOf->level.load();
+	object->lru = copyOf->lru.load();
+	object->setMesh(copyOf->getMesh());
+	object->minDistance = copyOf->minDistance.load();
+	object->projSize = copyOf->projSize.load();
+	object->state = copyOf->state.load();
+	object->usage = copyOf->usage.load();
+	object->memory = copyOf->memory.load();
 	return object;
 }
 
@@ -583,10 +664,10 @@ void SurfelManager::releaseCacheObject(CacheObject* object) {
 	object->lru = 0;
 	object->usage = 0;
 	object->memory = 0;
-	object->mesh = nullptr;
+	object->setMesh(nullptr);
 }
 
-CacheObject* SurfelManager::getCacheObject(const Util::StringIdentifier& id) const {
+SurfelManager::CacheObject* SurfelManager::getCacheObject(const Util::StringIdentifier& id) const {
 	auto it = idToCacheObject.find(id);
 	if(it == idToCacheObject.end())
 		return nullptr;
