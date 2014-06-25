@@ -121,6 +121,14 @@ if(ZLIB_FOUND)
 	append_property(MINSG_COMPILE_DEFINITIONS MINSG_HAVE_LIB_ZLIB)
 endif()
 
+# Dependency to Bullet
+find_package(FLANN 1.7.0 QUIET)
+if(FLANN_FOUND)
+	target_include_directories(MinSG PRIVATE ${FLANN_INCLUDE_DIRS})
+	target_link_libraries(MinSG LINK_PRIVATE ${FLANN_LIBRARIES})
+	append_property(MINSG_COMPILE_DEFINITIONS MINSG_HAVE_LIB_FLANN)
+endif()
+
 option(MINSG_PROFILING "Defines if profiling information is generated and output in MinSG.")
 append_property(MINSG_COMPILE_DEFINITIONS MINSG_PROFILING)
 

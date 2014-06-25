@@ -12,6 +12,8 @@ minsg_add_sources(
 	SurfelManager.cpp
 	ImportHandler.cpp
 	DataStrategy.cpp
+	GreedyProjectionTriangulation.cpp
+	Profiler.cpp
 )
 
 minsg_add_extension(MINSG_EXT_THESISSASCHA "Defines if the MinSG extension for Sascha's Master's Thesis is built.")
