@@ -65,9 +65,10 @@ class _DistanceCompare {
 		bool operator()(const T * a, const T * b) const {
 			volatile const float d1 = getDistance(a);
 			volatile const float d2 = getDistance(b);
-			volatile const float l1 = getLevel(b);
+			volatile const float l1 = getLevel(a);
 			volatile const float l2 = getLevel(b);
 			return fltCmp(l1, l2) || ( !fltCmp(l2, l1) && (fltCmp(d1, d2) || ( !fltCmp(d2, d1) && ptrCmp(a, b))));
+			//return fltCmp(d1, d2) || ( !fltCmp(d2, d1) && (fltCmp(l1, l2) || ( !fltCmp(l2, l1) && ptrCmp(a, b))));
 		}
 
 	private:
@@ -131,7 +132,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 		case RefineNode_t::RefineAndSkip:
 			if(dynamic_cast<GeometryNode*>(node) != nullptr) {
 				if(waitForRender)
-					while(!doDisplayNode(context, node, rp)) {Utils::sleep(1); manager->update();}
+					doDisplayNode(context, node, rp, true);
 				else if(immediate)
 					doDisplayNode(context, node, rp);
 				else
@@ -141,7 +142,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::RefineAndContinue:
 			if(waitForRender)
-				while(!doDisplayNode(context, node, rp)) {Utils::sleep(1); manager->update();}
+				doDisplayNode(context, node, rp, true);
 			else if(immediate)
 				doDisplayNode(context, node, rp);
 			else
@@ -150,7 +151,7 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::SkipChildren:
 			if(waitForRender)
-				while(!doDisplayNode(context, node, rp)) {Utils::sleep(1); manager->update();}
+				doDisplayNode(context, node, rp, true);
 			else if(immediate)
 				doDisplayNode(context, node, rp);
 			else
@@ -195,7 +196,7 @@ void Renderer::drawSurfels(FrameContext& context, Node* node, const RenderParam&
 	rc.popPointParameters();
 }
 
-bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderParam& rp, bool force) {
 	Geometry::Rect projectedRect(context.getProjectedRect(node));
 	float size = projectedRect.getArea();
 	float qSize = std::sqrt(size);
@@ -203,14 +204,13 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node->isInstance() ? node->getPrototype() : node);
 	if(geometry != nullptr) {
-		SurfelManager::MeshLoadResult_t result = manager->loadMesh(geometry, qSize, distance, async);
-		if(result == SurfelManager::Success) {
-			Mesh* mesh = manager->getMesh(node);
-			if(mesh == nullptr) {
+		Reference<Mesh> mesh;
+		if(manager->fetchMesh(mesh, geometry, qSize, distance, async, force) == SurfelManager::Success) {
+			if(mesh.isNull()) {
 				WARN("Empty mesh found! " + node->findAttribute(MESH_ID)->toString());
 				return false;
 			}
-			drawMesh(context, node, rp, mesh);
+			drawMesh(context, node, rp, mesh.get());
 			currentComplexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
 			node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount()));
 			return true;
@@ -221,10 +221,10 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 		}
 	}
 
-	SurfelManager::MeshLoadResult_t result = manager->loadSurfel(node, qSize, distance, async);
+	Reference<Mesh> mesh;
+	SurfelManager::MeshLoadResult_t result = manager->fetchSurfel(mesh, node, qSize, distance, async, force);
 	if(result == SurfelManager::Success ) {
-		Mesh* mesh = manager->getSurfel(node);
-		if(mesh == nullptr) {
+		if(mesh.isNull()) {
 			WARN("Empty surfel mesh found! " + node->findAttribute(SURFEL_ID)->toString());
 			return false;
 		}
@@ -237,7 +237,7 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 		if(pSize < 1)
 			pSize = 1;
 
-		drawSurfels(context, node, rp, mesh, pSize, count);
+		drawSurfels(context, node, rp, mesh.get(), pSize, count);
 		currentComplexity += count;
 		node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(count));
 
