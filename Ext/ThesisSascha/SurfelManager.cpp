@@ -718,6 +718,10 @@ void SurfelManager::clear() {
 	reservedMemory = 0;
 	usedMemory = 0;
 	frameNumber = 0;
+	worker->accumCacheTime = 0.0;
+	worker->accumCacheUpdates = 0;
+	worker->cacheHits = 0;
+	worker->cacheMisses = 0;
 }
 
 void SurfelManager::flush() {
