@@ -461,8 +461,10 @@ void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
 	}
 	VisitNodeFn_t visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, _2, async);
 	forEachNodeBottomUp(root, [this] (Node* node, uint32_t level) {
-		if(countComplexity(node) < maxComplexity)
+		if(countComplexity(node) < maxComplexity) {
+			node->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
 			return NodeVisitor::CONTINUE_TRAVERSAL;
+		}
 		return generateId(node, level);
 	}, visit);
 	forEachNodeTopDown(root, [] (Node* node) {
@@ -471,7 +473,7 @@ void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
 		node->unsetAttribute(NODE_COMPLEXITY);
 		node->unsetAttribute(NODE_HANDLED);
 	});
-	manager->flush();
+	manager->clear();
 }
 
 void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {
@@ -501,6 +503,7 @@ void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float c
 		}
 		updateProgress(processed, nodeCount);
 	}
+	manager->clear();
 
 	//TODO: recalculate coverage
 	/*if(dynamic_cast<GeometryNode*>(node) != nullptr) {

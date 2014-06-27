@@ -32,8 +32,11 @@
 #include <iostream>
 #include <cstdlib>
 #include <atomic>
+#include <iterator>
 
 #define LOCK(mutex) auto lock = Concurrency::createLock(mutex);
+#define LOG_STAT(name, value) static StringIdentifier sId ## name(#name); \
+	stats->setValue(sId ## name, GenericAttribute::createNumber(value));
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -203,6 +206,14 @@ struct ObjectCompare {
 	}
 };
 
+template<typename T>
+T atomic_fetch_add(std::atomic<T> *obj, T arg) {
+  T expected = obj->load();
+  while(!std::atomic_compare_exchange_weak(obj, &expected, expected + arg))
+    ;
+  return expected;
+}
+
 /******************************************
  * WorkerThread class
  ******************************************/
@@ -218,7 +229,9 @@ public:
 		Reference<Mesh> source;
 	};
 
-	WorkerThread(SurfelManager* manager) : closed(false), manager(manager) { start(); };
+	WorkerThread(SurfelManager* manager) : closed(false), manager(manager), mutex(Concurrency::createMutex()),
+			accumCacheTime(0), accumCacheUpdates(0), cacheMisses(0), cacheHits(0)
+			{ start(); };
 	virtual ~WorkerThread() = default;
 	void close();
 	void executeAsync(const std::function<void()>& function);
@@ -229,8 +242,15 @@ protected:
 	SyncQueue<Job_t> jobQueue;
 	bool closed;
 	WeakPointer<SurfelManager> manager;
+	std::unique_ptr<Concurrency::Mutex> mutex;
 public:
 	SyncQueue<std::function<void()>> mainThreadQueue;
+
+	// misuse WorkerThread for pimpl idiome
+	std::atomic<double> accumCacheTime;
+	std::atomic<uint64_t> accumCacheUpdates;
+	std::atomic<uint32_t> cacheMisses;
+	std::atomic<uint32_t> cacheHits;
 };
 
 void SurfelManager::WorkerThread::close() {
@@ -275,7 +295,8 @@ void SurfelManager::WorkerThread::flush(uint32_t timeLimit) {
 
 SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory, uint64_t maxReservedMemory) : basePath(basePath), worker(new WorkerThread(this)),
 		preprocessor(new Preprocessor(this)), maxMemory(maxMemory), usedMemory(0), reservedMemory(0), maxReservedMemory(maxReservedMemory),
-		frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), maxJobFlushTime(30), memoryLoadFactor(0.8f) {
+		frameNumber(0), maxJobNumber(MAX_JOB_NUMBER), maxJobFlushTime(30), memoryLoadFactor(0.8f), pending(0), maxPerFrameRequestMem(10*1024*1024),
+		maxPending(MAX_PENDING_OBJECTS), stats(new GenericAttributeMap) {
 	GenericAttributeSerialization::registerSerializer<WrapperAttribute<StringIdentifier>>(GATypeNameStringIdentifier, serializeID, unserializeID);
 	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
 	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
@@ -339,7 +360,7 @@ bool SurfelManager::isCached(Node* node) {
 		const StringIdentifier id = getStringId(node, MESH_ID, MESH_STRINGID);
 		auto it = idToCacheObject.find(id);
 		if(it != idToCacheObject.end()) {
-			if(it->second->isLoaded())
+			if(it->second->isLoaded() || it->second->isLoading())
 				return true;
 		}
 	}
@@ -347,7 +368,7 @@ bool SurfelManager::isCached(Node* node) {
 		const StringIdentifier id = getStringId(node, SURFEL_ID, SURFEL_STRINGID);
 		auto it = idToCacheObject.find(id);
 		if(it != idToCacheObject.end()) {
-			if(it->second->isLoaded())
+			if(it->second->isLoaded() || it->second->isLoading())
 				return true;
 		}
 	}
@@ -435,8 +456,10 @@ SurfelManager::MeshLoadResult_t SurfelManager::doFetchMesh(const Util::StringIde
 		}
 		object->lru = frameNumber;
 		if(object->isLoaded() && object->getMesh()) {
+			++worker->cacheHits;
 			return Success;
 		} else if(object->isPending() || object->isEmpty()) {
+			++worker->cacheMisses;
 			return Pending;
 		}
 		return Failed;
@@ -455,6 +478,7 @@ SurfelManager::MeshLoadResult_t SurfelManager::doFetchMesh(const Util::StringIde
 
 	idToCacheObject[id] = object;
 	pendingCacheObjects.push_back(object);
+	++worker->cacheMisses;
 	return Pending;
 }
 
@@ -475,32 +499,28 @@ SurfelManager::MeshLoadResult_t SurfelManager::doLoadMesh(CacheObject* object, b
 	reservedMemory += fileSize;
 	object->memory = fileSize; // only estimates the real memory consumption
 
-	std::function<void()> readFn = [this, object, filename] () {
-		if(object->isAborted()) {
-		//if(object->isAborted() || usedMemory+reservedMemory > maxMemory) {
-			object->state = CacheObject::Pending;
-			return;
-		}
-
-		//Reference<Mesh> mesh = Serialization::loadMesh(filename);
+	pending++;
+	Util::Timer timer;
+	std::function<void()> readFn = [this, object, filename, timer] () {
+		Reference<Mesh> mesh = Serialization::loadMesh(filename);
 		// TODO: use this method only for surfels (faster for smaller files?)
-		std::string data = FileUtils::getFileContents(filename);
-		Reference<Mesh> mesh = Serialization::loadMesh("mmf", data);
+		//std::string data = FileUtils::getFileContents(filename);
+		//Reference<Mesh> mesh = Serialization::loadMesh("mmf", data);
 
 		if(mesh.isNull()) {
 			WARN("Could not load mesh: " + filename.toString());
 			object->state = CacheObject::Empty;
-			return;
-		}
-		if(object->isAborted()) {
-			object->state = CacheObject::Pending;
+			pending--;
 			return;
 		}
 		object->setMesh(mesh.get());
+		reservedMemory += mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
 		reservedMemory -= object->memory;
 		object->memory = mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
-		reservedMemory += object->memory;
 		object->state = CacheObject::Loaded;
+		pending--;
+		worker->accumCacheUpdates++;
+		atomic_fetch_add(&worker->accumCacheTime, timer.getMilliseconds()); // += doesn't seem to be implemented in std::atomic for doubles
 	};
 	object->state = CacheObject::Loading;
 
@@ -518,12 +538,48 @@ void SurfelManager::update() {
 	while(!worker->mainThreadQueue.empty()) {
 		worker->mainThreadQueue.pop()();
 	}
-	++frameNumber;
 
+	LOG_STAT(pendingCache, pendingCacheObjects.size());
+	LOG_STAT(mainCache, sortedCacheObjects.size());
+	LOG_STAT(accumLoadTime, worker->accumCacheTime.load());
+	LOG_STAT(accumLoadNumber, worker->accumCacheUpdates.load());
+	LOG_STAT(hits, worker->cacheHits.load());
+	LOG_STAT(misses, worker->cacheMisses.load());
+	worker->cacheHits = 0;
+	worker->cacheMisses = 0;
+
+	++frameNumber;
+	uint32_t requestsPerFrame = 0;
+	uint32_t handled = 0;
+	static Util::Timer sortTimer;
+	sortTimer.reset();
 	// Sort pending objects and load by priority
 	//FIXME: std::sort throws segmentation fault (probably because of weak ordering)
 	std::stable_sort(pendingCacheObjects.begin(), pendingCacheObjects.end(), cacheCmp);
+	LOG_STAT(pendingSortTime, sortTimer.getMilliseconds());
+	sortTimer.reset();
 	cacheObjectBuffer.clear();
+	bool cacheDirty = false;
+
+	//avoid #pending objects get too large
+	while(pendingCacheObjects.size() > maxPending && ++handled < pendingCacheObjects.size()) {
+		CacheObject* object = pendingCacheObjects.back();
+		if(object->isPending() || object->isEmpty()) {
+			pendingCacheObjects.pop_back();
+			idToCacheObject.erase(object->getId());
+			reservedMemory -= object->memory;
+			releaseCacheObject(object);
+		} else if(object->isLoaded()) {
+			pendingCacheObjects.pop_back();
+			reservedMemory -= object->memory;
+			usedMemory += object->memory;
+			sortedCacheObjects.push_back(object);
+			cacheDirty = true;
+		} else {
+			break;
+		}
+	}
+
 	while(!pendingCacheObjects.empty()) {
 		CacheObject* object = pendingCacheObjects.front();
 		pendingCacheObjects.pop_front();
@@ -535,75 +591,119 @@ void SurfelManager::update() {
 			reservedMemory -= object->memory;
 			usedMemory += object->memory;
 			sortedCacheObjects.push_back(object);
-		} else if(object->isPending()) {
-			// Load mesh unless max pending memory exceeded
-			if(reservedMemory < maxReservedMemory && usedMemory+reservedMemory<=maxMemory) {
-				if(doLoadMesh(object, true) == Failed)
-					object->state = CacheObject::Empty;
-			}
-			cacheObjectBuffer.push_back(object);
+			cacheDirty = true;
 		} else if(object->isLoading()) {
 			cacheObjectBuffer.push_back(object);
+		} else if(object->isPending()) {
+			// Load mesh unless max pending memory exceeded
+			if(requestsPerFrame <= maxPerFrameRequestMem && reservedMemory < maxReservedMemory && usedMemory<=maxMemory) {
+				if(doLoadMesh(object, true) == Failed)
+					object->state = CacheObject::Empty;
+				requestsPerFrame += object->memory;
+				cacheObjectBuffer.push_back(object);
+			} else {
+				if(cacheObjectBuffer.empty()) {
+					cacheObjectBuffer.swap(pendingCacheObjects);
+					cacheObjectBuffer.push_back(object);
+				} else {
+					cacheObjectBuffer.push_back(object);
+					if(cacheObjectBuffer.size()<pendingCacheObjects.size()) {
+						pendingCacheObjects.insert(pendingCacheObjects.end(),
+								std::make_move_iterator(cacheObjectBuffer.begin()),
+								std::make_move_iterator(cacheObjectBuffer.end()));
+						cacheObjectBuffer.clear();
+						/*while(!cacheObjectBuffer.empty()) {
+							pendingCacheObjects.push_front(cacheObjectBuffer.back());
+							cacheObjectBuffer.pop_back();
+						}*/
+						cacheObjectBuffer.swap(pendingCacheObjects);
+					} else {
+						cacheObjectBuffer.insert(cacheObjectBuffer.end(),
+								std::make_move_iterator(pendingCacheObjects.begin()),
+								std::make_move_iterator(pendingCacheObjects.end()));
+						pendingCacheObjects.clear();
+						/*while(!pendingCacheObjects.empty()) {
+							cacheObjectBuffer.push_back(pendingCacheObjects.front());
+							pendingCacheObjects.pop_front();
+						}*/
+					}
+				}
+			}
 		}
 	}
 	pendingCacheObjects.swap(cacheObjectBuffer);
 
+	LOG_STAT(pendingIterate, sortTimer.getMilliseconds());
 
+	sortTimer.reset();
 	// if maximum memory is exceeded, sort cache and remove lru
-	if(usedMemory+reservedMemory >= maxMemory * memoryLoadFactor) {
+	//if(usedMemory >= maxMemory * memoryLoadFactor && (usedMemory>maxMemory || cacheDirty)) {
+	if(usedMemory >= maxMemory) {
 		//FIXME: std::sort throws segmentation fault (probably because of weak ordering)
 		std::stable_sort(sortedCacheObjects.begin(), sortedCacheObjects.end(), cacheCmp);
+		LOG_STAT(cacheSortTime, sortTimer.getMilliseconds());
+		sortTimer.reset();
 		cacheObjectBuffer.clear();
 		while(!sortedCacheObjects.empty()) {
 			CacheObject* object = sortedCacheObjects.back();
 			sortedCacheObjects.pop_back();
 
 			if(object->isLoaded()) {
-				if(usedMemory+reservedMemory >= maxMemory * memoryLoadFactor) {
-					// only remove object from cache when there is an pending object with higher priority
-					CacheObject* firstPending = pendingCacheObjects.empty() ? nullptr : pendingCacheObjects.front();
-					if(firstPending && cacheCmp(firstPending, object)) {
-						idToCacheObject.erase(object->getId());
-						usedMemory -= object->memory;
-						releaseCacheObject(object);
+				// only remove object from cache when there is an pending object with higher priority
+				//CacheObject* firstPending = pendingCacheObjects.empty() ? nullptr : pendingCacheObjects.front();
+				if(usedMemory > maxMemory) {
+					idToCacheObject.erase(object->getId());
+					usedMemory -= object->memory;
+					releaseCacheObject(object);
+				} else {
+					// lru object in cache has greater priority than all pending objects,
+					// therefore we can assume that this is true for all objects in the cache
+					if(cacheObjectBuffer.empty()) {
+						cacheObjectBuffer.swap(sortedCacheObjects);
+						cacheObjectBuffer.push_back(object);
 					} else {
-						// lru object in cache has greater priority than all pending objects,
-						// therefore we can assume that this is true for all objects in the cache
-						if(cacheObjectBuffer.empty()) {
+						cacheObjectBuffer.push_back(object);
+						if(cacheObjectBuffer.size()<sortedCacheObjects.size()) {
+							sortedCacheObjects.insert(sortedCacheObjects.end(),
+									std::make_move_iterator(cacheObjectBuffer.begin()),
+									std::make_move_iterator(cacheObjectBuffer.end()));
+							cacheObjectBuffer.clear();
+							/*while(!cacheObjectBuffer.empty()) {
+								sortedCacheObjects.push_front(cacheObjectBuffer.back());
+								cacheObjectBuffer.pop_back();
+							}*/
 							cacheObjectBuffer.swap(sortedCacheObjects);
 						} else {
-							cacheObjectBuffer.push_front(object);
-							if(cacheObjectBuffer.size()<sortedCacheObjects.size()) {
-								while(!sortedCacheObjects.empty()) {
-									sortedCacheObjects.push_back(sortedCacheObjects.front());
-									sortedCacheObjects.pop_front();
-								}
-								cacheObjectBuffer.swap(sortedCacheObjects);
-							} else {
-								while(!sortedCacheObjects.empty()) {
-									cacheObjectBuffer.push_front(sortedCacheObjects.back());
-									sortedCacheObjects.pop_back();
-								}
-							}
+							cacheObjectBuffer.insert(cacheObjectBuffer.end(),
+									std::make_move_iterator(sortedCacheObjects.begin()),
+									std::make_move_iterator(sortedCacheObjects.end()));
+							sortedCacheObjects.clear();
+							/*while(!pendingCacheObjects.empty()) {
+								cacheObjectBuffer.push_back(sortedCacheObjects.front());
+								sortedCacheObjects.pop_front();
+							}*/
 						}
 					}
-				} else {
-					cacheObjectBuffer.push_front(object);
 				}
 			} else {
 				// move pending objects back to pending queue
+				WARN("pending object " + object->getId().toString() + " in main cache.");
 				pendingCacheObjects.push_back(object);
 				reservedMemory += object->memory;
 				usedMemory -= object->memory;
 			}
 		}
 		sortedCacheObjects.swap(cacheObjectBuffer);
+	} else {
+		LOG_STAT(cacheSortTime, 0.0);
 	}
+	LOG_STAT(cacheIterate, sortTimer.getMilliseconds());
 }
 
 void SurfelManager::clear() {
 	flush();
 	//auto lock = Concurrency::createLock(*worker->memoryMutex);
+	idToCacheObject.clear();
 	cacheObjectBuffer.clear();
 	while(!sortedCacheObjects.empty()) {
 		CacheObject* object = sortedCacheObjects.back();

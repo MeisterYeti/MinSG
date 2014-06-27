@@ -17,6 +17,7 @@
 #include <Util/IO/FileName.h>
 #include <Util/TypeNameMacro.h>
 #include <Util/StringIdentifier.h>
+#include <Util/GenericAttribute.h>
 
 #include <vector>
 #include <unordered_map>
@@ -68,17 +69,23 @@ public:
 	void executeAsync(const std::function<void()>& function);
 	void executeOnMainThread(const std::function<void()>& function);
 
-	uint64_t getUsedMemory() const { return usedMemory+reservedMemory; }
+	uint32_t getPending() const { return pending; }
+	uint64_t getUsedMemory() const { return usedMemory; }
+	uint64_t getReservedMemory() const { return reservedMemory; }
 	uint64_t getMaxMemory() const { return maxMemory; }
 	void setMaxMemory(uint64_t value) { maxMemory = value; }
+	void setMaxPerFrameRequestMem(uint32_t value) { maxPerFrameRequestMem = value; }
 	void setMaxReservedMemory(uint64_t value) { maxReservedMemory = value; }
 	void setMaxJobs(uint32_t jobs)  { maxJobNumber = jobs; }
 	uint32_t getMaxJobs() const { return maxJobNumber; }
+	void setMaxPending(uint32_t value)  { maxPending = value; }
 	void setMemoryLoadFactor(float value)  { memoryLoadFactor = value; }
 	float getMemoryLoadFactor() const { return memoryLoadFactor; }
 	void setMaxJobFlushTime(uint32_t time)  { maxJobFlushTime = time; }
 
 	void setPriorityOrder(const std::vector<uint32_t>& order);
+
+	Util::GenericAttributeMap * getStats() const { return stats.get(); };
 private:
 	class WorkerThread;
 	class CacheObject;
@@ -99,9 +106,12 @@ private:
 	std::atomic<uint64_t> usedMemory;
 	std::atomic<uint64_t> reservedMemory;
 	std::atomic<uint64_t> maxReservedMemory;
+	std::atomic<uint32_t> pending;
 	uint32_t frameNumber;
 	uint32_t maxJobNumber;
 	uint32_t maxJobFlushTime;
+	uint32_t maxPerFrameRequestMem;
+	uint32_t maxPending;
 	float memoryLoadFactor;
 
 	typedef std::deque<CacheObject*> SortedCache_t;
@@ -111,6 +121,8 @@ private:
 	SortedCache_t pendingCacheObjects;
 	IdToCacheMap_t idToCacheObject;
 	std::deque<CacheObject*> cacheObjectPool;
+
+	std::unique_ptr<Util::GenericAttributeMap> stats;
 };
 
 } /* namespace ThesisSascha */

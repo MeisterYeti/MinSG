@@ -19,6 +19,7 @@ namespace MinSG {
 namespace ThesisSascha {
 
 static const uint32_t MAX_JOB_NUMBER = 100;
+static const uint32_t MAX_PENDING_OBJECTS = 1000;
 static const uint32_t MAX_FLUSH_TIME = 30;
 static const size_t INITIAL_POOL_SIZE = 200;
 static const size_t MIN_STREAM_FILE_SIZE = 1024 * 1024;
@@ -41,6 +42,7 @@ static const Util::StringIdentifier NODE_COMPLEXITY(NodeAttributeModifier::creat
 
 static const Util::StringIdentifier NODE_LEVEL("nodeLevel");
 static const Util::StringIdentifier NODE_HANDLED(NodeAttributeModifier::create("nodeHandled", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
+static const Util::StringIdentifier NODE_RENDERED(NodeAttributeModifier::create("nodeRendered", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 static const Util::StringIdentifier CHILDREN_LOADED(NodeAttributeModifier::create("childrenLoaded", NodeAttributeModifier::PRIVATE_ATTRIBUTE));
 
 }

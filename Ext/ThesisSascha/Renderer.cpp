@@ -130,6 +130,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 	RefineNode_t result = refineNodeFn(node);
 	switch (result) {
 		case RefineNode_t::RefineAndSkip:
+			for(Node* child : getChildNodes(node)) // Mark child nodes as rendered
+				child->setAttribute(NODE_RENDERED, GenericAttribute::createBool(true));
+			node->setAttribute(NODE_RENDERED, GenericAttribute::createBool(false));
 			if(dynamic_cast<GeometryNode*>(node) != nullptr) {
 				if(waitForRender)
 					doDisplayNode(context, node, rp, true);
@@ -141,6 +144,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 			}
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::RefineAndContinue:
+			for(Node* child : getChildNodes(node)) // Mark child nodes as rendered
+				child->setAttribute(NODE_RENDERED, GenericAttribute::createBool(true));
+			node->setAttribute(NODE_RENDERED, GenericAttribute::createBool(true));
 			if(waitForRender)
 				doDisplayNode(context, node, rp, true);
 			else if(immediate)
@@ -150,6 +156,9 @@ NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, cons
 				//activeNodes.push_back(node);
 			return NodeRendererResult::PASS_ON;
 		case RefineNode_t::SkipChildren:
+			for(Node* child : getChildNodes(node)) // Mark child nodes as not rendered
+				child->setAttribute(NODE_RENDERED, GenericAttribute::createBool(false));
+			node->setAttribute(NODE_RENDERED, GenericAttribute::createBool(true));
 			if(waitForRender)
 				doDisplayNode(context, node, rp, true);
 			else if(immediate)
@@ -232,16 +241,22 @@ bool Renderer::doDisplayNode(FrameContext& context, Node* node, const RenderPara
 		GenericAttribute* attr = node->findAttribute(SURFEL_REL_COVERING);
 		float relCovering = attr == nullptr ? 0.5f : attr->toFloat();
 
+		node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(maxCount));
 		uint32_t count = clamp<uint32_t>(countFn(node, size, maxCount, relCovering), 0, maxCount);
-		float pSize = sizeFn(node, size, maxCount, relCovering);
-		if(pSize < 1)
-			pSize = 1;
+		if(count>0) {
+			float pSize = sizeFn(node, size, maxCount, relCovering);
+			if(pSize < 1)
+				pSize = 1;
 
-		drawSurfels(context, node, rp, mesh.get(), pSize, count);
-		currentComplexity += count;
-		node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(count));
-
+			drawSurfels(context, node, rp, mesh.get(), pSize, count);
+			currentComplexity += count;
+			node->setAttribute(NODE_RENDERED, GenericAttribute::createBool(true));
+		} else {
+			node->setAttribute(NODE_RENDERED, GenericAttribute::createBool(false));
+		}
 		return true;
+	} else {
+		node->setAttribute(NODE_RENDERED, GenericAttribute::createBool(false));
 	}
 
 	if(result == SurfelManager::Failed)
@@ -255,18 +270,7 @@ State* Renderer::clone() const {
 }
 
 State::stateResult_t Renderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
-	const SortedNodeSet tempNodes = std::move(*activeNodes);
 	frameTimer.reset();
-	currentComplexity = 0;
-	// use last frame
-	for(auto & activeNode : tempNodes) {
-		if(activeNode->isAttributeSet(NODE_COMPLEXITY))
-			currentComplexity += activeNode->getAttribute(NODE_COMPLEXITY)->toUnsignedInt();
-		if(maxComplexity > 0 && currentComplexity > maxComplexity)
-			activeNode->unsetAttribute(NODE_HANDLED);
-		else
-			activeNode->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
-	}
 	currentComplexity = 0;
 	activeNodes.reset(new SortedNodeSet(context.getCamera()->getWorldPosition()));
 	return NodeRendererState::doEnableState(context, node, rp);
@@ -290,7 +294,20 @@ void Renderer::doDisableState(FrameContext & context, Node * node, const RenderP
 			break;
 		doDisplayNode(context, activeNode, rp);
 	}
-	//activeNodes.clear();
+
+	currentComplexity = 0;
+
+	// use last frame
+	for(auto & activeNode : *activeNodes) {
+		if(activeNode->isAttributeSet(NODE_COMPLEXITY))
+			currentComplexity += activeNode->getAttribute(NODE_COMPLEXITY)->toUnsignedInt();
+		if(maxComplexity > 0 && currentComplexity > maxComplexity)
+			activeNode->unsetAttribute(NODE_HANDLED);
+		else
+			activeNode->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
+	}
+
+	activeNodes.reset();
 	renderTime = frameTimer.getMilliseconds();
 }
 
