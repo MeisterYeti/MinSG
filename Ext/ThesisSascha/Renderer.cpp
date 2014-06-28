@@ -29,6 +29,7 @@
 
 #include <deque>
 #include <string>
+#include <set>
 
 #define MAX_POINT_SIZE 64
 
@@ -115,11 +116,6 @@ Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : man
 	sizeFn = [] (Node* node, float projSize, uint32_t surfelNum, float coverage) { return (coverage*projSize*4)/surfelNum; };
 	refineNodeFn = [] (Node* node) { return RefineNode_t::RefineAndContinue; };
 	activeNodes.reset(new SortedNodeSet(Geometry::Vec3()));
-}
-
-template<typename T>
-inline T clamp(T value, T min, T max) {
-	return std::max(min, std::min(max, value));
 }
 
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
