@@ -274,7 +274,8 @@ public:
 
 	inline float getPriority(const CacheObject* obj) {
 		if(obj == nullptr) return 0;
-		return priorityFn(obj->id, obj->lru, obj->usage, obj->memory, obj->childCount, obj->projSize, obj->minDistance, obj->isSurfel);
+		return std::sqrt(obj->projSize) / std::max(obj->minDistance,0.1f);
+		//return priorityFn(obj->id, obj->lru, obj->usage, obj->memory, obj->childCount, obj->projSize, obj->minDistance, obj->isSurfel);
 	}
 
 	inline uint32_t getQueueIndexFromPriority(CacheObject* obj) {
