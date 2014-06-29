@@ -51,6 +51,7 @@ public:
 	//bool isImmediate() { return this->immediate; }
 	void setPointSizeFactor(float value);
 	void setMinProjSize(float value);
+	void sortFront(bool value);
 
 	static void drawMesh(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh);
 	static void drawSurfels(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh, float pSize, uint32_t count);

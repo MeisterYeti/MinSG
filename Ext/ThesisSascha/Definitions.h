@@ -18,7 +18,7 @@
 namespace MinSG {
 namespace ThesisSascha {
 
-#define LOCK(mutex) auto lock = Concurrency::createLock(mutex);
+#define LOCK(mutex) auto lock = Util::Concurrency::createLock(mutex);
 
 #define LOG_STAT(name, value) static StringIdentifier sId ## name(#name); \
 	stats->setValue(sId ## name, GenericAttribute::createNumber(value));
