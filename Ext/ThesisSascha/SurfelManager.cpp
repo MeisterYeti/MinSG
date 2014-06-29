@@ -26,6 +26,7 @@
 #include <Util/Concurrency/UserThread.h>
 #include <Util/Concurrency/DataStructures/SyncQueue.h>
 #include <Util/Concurrency/Mutex.h>
+#include <Util/Concurrency/Semaphore.h>
 #include <Util/Concurrency/Lock.h>
 #include <Util/Timer.h>
 
@@ -37,10 +38,18 @@
 #include <array>
 #include <limits>
 #include <iostream>
+#include <set>
 
-#define LOG_STAT(name, value) static StringIdentifier sId ## name(#name); \
-	stats->setValue(sId ## name, GenericAttribute::createNumber(value));
+#define START_DBG_TIMER() \
+	static Timer dbgTimer; \
+	static double accTime = 0; \
+	static uint32_t accCount = 0; \
+	dbgTimer.reset();
 
+#define END_DBG_TIMER() \
+	accTime += dbgTimer.getMilliseconds(); \
+	++accCount; \
+	LOG_STAT(dbgTime, accTime/accCount); \
 
 namespace MinSG {
 namespace ThesisSascha {
@@ -196,7 +205,7 @@ private:
 	std::unique_ptr<Mutex> mutex;
 	uint32_t cacheSize = 0;
 public:
-	MainCache() : mutex(Concurrency::createMutex()) {
+	MainCache() : mutex(createMutex()) {
 		evictIt = list.end();
 	}
 
@@ -249,33 +258,29 @@ public:
  ******************************************/
 class RequestQueue {
 private:
-	typedef std::deque<CacheObject*> InternalQueue_t;
+	typedef std::set<CacheObject*, std::function<bool(const CacheObject*, const CacheObject*)>> InternalQueue_t;
 	std::array<InternalQueue_t, REQUEST_QUEUE_SIZE> queues;
 	std::unique_ptr<Mutex> mutex;
+	std::unique_ptr<Semaphore> semaphore;
 
 	float lastFramePriorityMin = 0;
 	float lastFramePriorityMax = 0;
 	float currentFramePriorityMin = std::numeric_limits<float>::max();
 	float currentFramePriorityMax = 0;
-public:
+
 	bool sortRequests = false;
+	uint32_t maxSize = 0;
+public:
 
-	SurfelManager::RequestPriorityFn_t priorityFn;
-
-	RequestQueue() : mutex(Concurrency::createMutex()) {
+	RequestQueue() : mutex(createMutex()), semaphore(createSemaphore()) {
 		for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i)
-			queues[i] = InternalQueue_t();
-		priorityFn = [] (StringIdentifier id, uint32_t lru, uint32_t usage,
-				uint32_t memory, uint32_t childCount, float projSize,
-				float minDistance, bool isSurfel)  {
-			return projSize;
-		};
+			queues[i] = InternalQueue_t([this](const CacheObject* oc1, const CacheObject* oc2) { return getPriority(oc1) < getPriority(oc2); });
 	}
 
 	inline float getPriority(const CacheObject* obj) {
 		if(obj == nullptr) return 0;
-		return std::sqrt(obj->projSize) / std::max(obj->minDistance,0.1f);
-		//return priorityFn(obj->id, obj->lru, obj->usage, obj->memory, obj->childCount, obj->projSize, obj->minDistance, obj->isSurfel);
+		//return std::sqrt(obj->projSize) / std::max(obj->minDistance,0.1f);
+		return obj->minDistance;
 	}
 
 	inline uint32_t getQueueIndexFromPriority(CacheObject* obj) {
@@ -284,21 +289,30 @@ public:
 		currentFramePriorityMax = std::max(currentFramePriorityMax, priority);
 		priority = clamp<float>(priority - lastFramePriorityMin, 0, lastFramePriorityMax- lastFramePriorityMin) ;
 		float range = lastFramePriorityMax-lastFramePriorityMin;
-		return range > 0 ? std::floor((1.0f - priority/range)*(REQUEST_QUEUE_SIZE-1)) : 0;
+		return range > 0 ? std::floor((priority/range)*(REQUEST_QUEUE_SIZE-1)) : 0;
 	}
 
-	void push(CacheObject* obj) {
+	bool push(CacheObject* obj) {
 		LOCK(*mutex);
+		if(obj == nullptr || (maxSize > 0 && sizeInternal() >= maxSize))
+			return false;
 		uint32_t p = clamp<uint32_t>(getQueueIndexFromPriority(obj), 0, REQUEST_QUEUE_SIZE-1);
-		queues[p].push_back(obj);
+		//queues[p].push_back(obj);
+		queues[p].insert(obj);
+		semaphore->post();
+		return true;
 	};
 
 	CacheObject* popFront() {
+		semaphore->wait();
 		LOCK(*mutex);
 		for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i) {
 			if(!queues[i].empty()) {
-				auto co = queues[i].front();
-				queues[i].pop_front();
+				//auto co = queues[i].front();
+				//queues[i].pop_front();
+				auto it = queues[i].begin();
+				CacheObject* co = *it;
+				queues[i].erase(it);
 				return co;
 			}
 		}
@@ -306,11 +320,15 @@ public:
 	};
 
 	CacheObject* popBack() {
+		semaphore->wait();
 		LOCK(*mutex);
 		for(uint32_t i=REQUEST_QUEUE_SIZE-1; i>=0; --i) {
 			if(!queues[i].empty()) {
-				auto co = queues[i].back();
-				queues[i].pop_back();
+				//auto co = queues[i].back();
+				//queues[i].pop_back();
+				auto it = --queues[i].end();
+				CacheObject* co = *it;
+				queues[i].erase(it);
 				return co;
 			}
 		}
@@ -321,8 +339,8 @@ public:
 		LOCK(*mutex);
 		for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i) {
 			if(!queues[i].empty()) {
-				auto co = queues[i].front();
-				return co;
+				auto co = queues[i].begin();
+				return *co;
 			}
 		}
 		return nullptr;
@@ -332,21 +350,15 @@ public:
 		LOCK(*mutex);
 		for(uint32_t i=REQUEST_QUEUE_SIZE-1; i>=0; --i) {
 			if(!queues[i].empty()) {
-				auto co = queues[i].back();
-				return co;
+				auto co = queues[i].rbegin();
+				return *co;
 			}
 		}
 		return nullptr;
 	}
 
 	bool empty() const {
-		LOCK(*mutex);
-		for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i) {
-			if(!queues[i].empty()) {
-				return false;
-			}
-		}
-		return true;
+		return size() <= 0;
 	}
 
 	void clear() {
@@ -362,11 +374,7 @@ public:
 
 	size_t size() const {
 		LOCK(*mutex);
-		size_t c=0;
-		for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i) {
-			c += queues[i].size();
-		}
-		return c;
+		return sizeInternal();
 	}
 
 	size_t size(uint32_t p) const {
@@ -383,7 +391,7 @@ public:
 		currentFramePriorityMin = std::numeric_limits<float>::max();
 		currentFramePriorityMax = 0;
 
-		if(sortRequests) {
+		/*if(sortRequests) {
 			for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i) {
 				if(!queues[i].empty()) {
 					std::sort(queues[i].begin(), queues[i].end(), [this](const CacheObject* oc1, const CacheObject* oc2) {
@@ -392,7 +400,26 @@ public:
 					break;
 				}
 			}
+		}*/
+	}
+
+	void setMaxSize(uint32_t value) {
+		LOCK(*mutex);
+		maxSize = value;
+	}
+
+	void setSortRequests(bool value) {
+		LOCK(*mutex);
+		sortRequests = value;
+	}
+private:
+
+	inline size_t sizeInternal() const {
+		uint32_t count = 0;
+		for(uint32_t i=0; i<REQUEST_QUEUE_SIZE; ++i) {
+			count += queues[i].size();
 		}
+		return count;
 	}
 
 };
@@ -412,12 +439,11 @@ public:
 	Reference<Preprocessor> preprocessor;
 	FileName basePath;
 	uint64_t maxMemory;
-	uint64_t requestLimit = 10485760; // 10 MB
-	uint64_t frameRequestLimit = 2097152; // 2 MB
-	uint32_t maxPending = 1000;
 	float memoryLoadFactor = 0.8;
-	uint32_t maxIter = 100;
-	uint32_t maxFrameTime = 30;
+
+	uint32_t perFrameRequestLimit = 10;
+	uint32_t globalRequestLimit = 100;
+	uint32_t perFrameEvictLimit = 100;
 
 	std::unique_ptr<GenericAttributeMap> stats;
 public:
@@ -435,7 +461,10 @@ public:
 	void executeOnMainThread(std::function<void()> function) { mainThreadQueue.push(function); };
 
 	void release(CacheObject* obj);
+
+	void requestHandler();
 public:
+	std::unique_ptr<Mutex> mutex;
 
 	SyncQueue<Job_t> jobQueue;
 	SyncQueue<Job_t> mainThreadQueue;
@@ -443,8 +472,6 @@ public:
 
 	// stores all currently used cached objects
 	std::unordered_map<StringIdentifier,CacheObject*> idToCacheObject;
-	// stores cache objects that can not be released without further preconditions (e.g. child nodes are loaded)
-	//std::unordered_map<StringIdentifier,CacheObject*> lockedCache;
 
 	RequestQueue requests;
 	MainCache cache;
@@ -454,14 +481,13 @@ public:
 	uint32_t loadingRequests = 0;
 	uint32_t cacheMisses = 0;
 	uint32_t cacheHits = 0;
-	std::atomic<uint64_t> currentRequestSize;
-	uint64_t currentMemorySize = 0;
+	std::atomic<uint64_t> currentMemorySize;
 	double accumLoadTime = 0;
 	uint64_t accumLoadNumber = 0;
 };
 
 SurfelManager::Implementation::Implementation(SurfelManager* m, Preprocessor* p, const FileName& basePath, uint64_t maxMemory) :
-		manager(m), preprocessor(p), basePath(basePath), maxMemory(maxMemory), currentRequestSize(0),
+		mutex(createMutex()), manager(m), preprocessor(p), basePath(basePath), maxMemory(maxMemory), currentMemorySize(0),
 		stats(new GenericAttributeMap) {
 }
 
@@ -471,11 +497,15 @@ void SurfelManager::Implementation::init() {
 	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
 	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
 		CacheObject::cacheObjectPool.push_back(CacheObject::Ptr_t(new CacheObject(NO_PARENT)));
+		executeAsync([this](){requestHandler();});
+		executeAsync([this](){requestHandler();});
 	}
 }
 void SurfelManager::Implementation::update() {
 	static Timer updateTimer;
+	static Timer timer;
 	updateTimer.reset();
+	timer.reset();
 	++frameNumber;
 
 	LOG_STAT(requestQueue, requests.size());
@@ -490,37 +520,36 @@ void SurfelManager::Implementation::update() {
 	LOG_STAT(cacheObjects, idToCacheObject.size());
 	LOG_STAT(accumLoadTime, accumLoadTime);
 	LOG_STAT(accumLoadNumber, accumLoadNumber);
+	LOG_STAT(avgLoadTime, accumLoadNumber>0?accumLoadTime/accumLoadNumber:0);
 	LOG_STAT(hits, cacheHits);
 	LOG_STAT(misses, cacheMisses);
 	LOG_STAT(usedMemory, currentMemorySize/(1024.0f*1024.0f));
-	LOG_STAT(requestSize, currentRequestSize/(1024.0f*1024.0f));
 	LOG_STAT(loadRequests, loadingRequests);
 	cacheHits = 0;
 	cacheMisses = 0;
 
-	for(uint32_t i=0; i<maxIter && !mainThreadQueue.empty() && updateTimer.getMilliseconds() <= maxFrameTime; ++i) {
+	LOG_STAT(jobQueueSize, mainThreadQueue.size());
+	while(!mainThreadQueue.empty()) {
 		// never blocks since this is the only thread that removes jobs from this queue
 		mainThreadQueue.pop()();
 	}
+	LOG_STAT(jobQueueTime, timer.getMilliseconds());
+	timer.reset();
 
-	//if(currentRequestSize < requestLimit)
 	requests.update();
-	uint64_t frameRequests = 0;
-	while(currentRequestSize < requestLimit && frameRequests < frameRequestLimit
-			&& currentMemorySize < maxMemory && loadingRequests < maxPending && !requests.empty() && updateTimer.getMilliseconds() < maxFrameTime) {
+	/*uint64_t frameRequests = 0;
+	uint32_t handled = 0;
+	for(frameRequests = 0; frameRequests < perFrameRequestLimit && loadingRequests < globalRequestLimit && currentMemorySize < maxMemory; ++frameRequests) {
 		CacheObject* object = requests.popFront();
-		uint64_t tmp = currentRequestSize;
 		if(doLoadMesh(object, true) == Failed)
 			release(object);
-		frameRequests += currentRequestSize > tmp ? currentRequestSize-tmp : 0;
 	}
+	LOG_STAT(requestTime, timer.getMilliseconds());
+	LOG_STAT(requestsHandled, frameRequests);
+	timer.reset();*/
 
 	if(currentMemorySize > maxMemory * memoryLoadFactor) {
-		uint32_t i = 0;
-		while(updateTimer.getMilliseconds() < maxFrameTime
-				&& (currentMemorySize > maxMemory
-						|| (currentMemorySize > maxMemory * memoryLoadFactor
-								&& ++i <= std::min(cache.size(), maxIter)))) {
+		for(uint32_t i=0; (i<perFrameEvictLimit && currentMemorySize > maxMemory * memoryLoadFactor) || currentMemorySize > maxMemory; ++i) {
 			CacheObject* obj = cache.evict();
 			if(obj != nullptr) {
 				currentMemorySize -= obj->memory;
@@ -534,6 +563,8 @@ void SurfelManager::Implementation::update() {
 			}
 		}
 	}
+	LOG_STAT(evictTime, timer.getMilliseconds());
+	timer.reset();
 	LOG_STAT(updateTime, updateTimer.getMilliseconds());
 }
 
@@ -550,7 +581,6 @@ void SurfelManager::Implementation::clear() {
 	loadingRequests = 0;
 	cacheMisses = 0;
 	cacheHits = 0;
-	currentRequestSize = 0;
 	currentMemorySize = 0;
 	accumLoadTime = 0;
 	accumLoadNumber = 0;
@@ -568,19 +598,15 @@ void SurfelManager::Implementation::flush() {
 }
 
 SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doFetch(const StringIdentifier& id, const StringIdentifier& parentId, bool isSurfel, Util::Reference<Rendering::Mesh>& out, float projSize, float distance, bool async, bool force) {
+	LOCK(*mutex);
 	auto it = idToCacheObject.find(id);
 	CacheObject* object = nullptr;
 	if(it != idToCacheObject.end()) {
 		object = it->second;
-	} else if (currentMemorySize >= maxMemory) {
+	} else if (!force && currentMemorySize >= maxMemory) {
 		++cacheMisses;
 		return Failed;
 	} else {
-		if(requests.size() > maxPending) {
-			++cacheMisses;
-			release(requests.popBack());
-			return Failed;
-		}
 		object = CacheObject::createCacheObject(id);
 		idToCacheObject[id] = object;
 	}
@@ -602,17 +628,34 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doFetch(const Str
 		out = object->mesh;
 		++cacheHits;
 		return Success;
+	} else if(force) {
+		object->state = CacheObject::Pending;
+		mutex->unlock();
+		if(doLoadMesh(object, false) == Failed) {
+			mutex->lock();
+			WARN("Could not force load mesh " + id.toString());
+			++cacheMisses;
+			return Failed;
+		}
+		mutex->lock();
+		out = object->mesh;
+		return Success;
+		++cacheHits;
 	} else if(object->isFree()) {
 		object->state = CacheObject::Pending;
-		requests.push(object);
+		if(!requests.push(object)) {
+			mutex->unlock();
+			release(object);
+			mutex->lock();
+		}
 	}
 	++cacheMisses;
 
-	// TODO: force loading
 	return Pending;
 }
 
 bool SurfelManager::Implementation::isCached(const StringIdentifier& id) const {
+	LOCK(*mutex);
 	auto it = idToCacheObject.find(id);
 	if(it != idToCacheObject.end()) {
 		return it->second->isLoaded();
@@ -621,67 +664,64 @@ bool SurfelManager::Implementation::isCached(const StringIdentifier& id) const {
 }
 
 SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheObject* object, bool async) {
-	if(!object || object->isFree()) return Failed;
-	if(!object->isPending()) return Pending;
+	std::function<void()> readFn = [](){};
+	{
+		LOCK(*mutex);
+		if(!object || object->isFree()) return Failed;
+		if(!object->isPending()) return Pending;
 
-	const FileName& filename = buildMeshFilename(basePath, object->isSurfel ? "surfels/" : "meshes/", object->id);
-	if(!FileUtils::isFile(filename)) {
-		WARN("File '" + filename.toString() + "' does not exist.");
-		return Failed;
-	}
+		const FileName& filename = buildMeshFilename(basePath, object->isSurfel ? "surfels/" : "meshes/", object->id);
 
-	if(object->parentId != NO_PARENT) {
-		auto pIt = idToCacheObject.find(object->parentId);
-		if(pIt != idToCacheObject.end()) {
-			pIt->second->childCount++;
-			pIt->second->used = true;
-		} else {
-			//WARN("Parent of '" + object->id.toString() + "' is not in cache.");
+		// extremely slow. Let the file load thread cope with it
+		/*if(!FileUtils::isFile(filename)) {
+			WARN("File '" + filename.toString() + "' does not exist.");
 			return Failed;
+		}*/
+
+		if(object->parentId != NO_PARENT) {
+			auto pIt = idToCacheObject.find(object->parentId);
+			if(pIt != idToCacheObject.end()) {
+				pIt->second->childCount++;
+				pIt->second->used = true;
+			} else {
+				//WARN("Parent of '" + object->id.toString() + "' is not in cache.");
+				return Failed;
+			}
 		}
-	}
 
-	// estimate memory usage
-	uint64_t fileSize = FileUtils::fileSize(filename);
-	object->memory = fileSize; // only estimates the real memory consumption
-	currentRequestSize += fileSize;
+		++loadingRequests;
+		Util::Timer timer;
+		readFn = [this, object, filename, timer] () {
+			Reference<Mesh> mesh = Serialization::loadMesh(filename);
+			if(mesh.isNull()) {
+				WARN("Could not load mesh: " + filename.toString());
+				object->state = CacheObject::Pending;
 
-	++loadingRequests;
-	Util::Timer timer;
-	std::function<void()> readFn = [this, object, filename, timer] () {
-		Reference<Mesh> mesh = Serialization::loadMesh(filename);
-		if(mesh.isNull()) {
-			WARN("Could not load mesh: " + filename.toString());
-			object->state = CacheObject::Pending;
-
-			executeOnMainThread([this, object]() {
-				if(object->parentId != NO_PARENT) {
-					auto pIt = idToCacheObject.find(object->parentId);
-					if(pIt != idToCacheObject.end()) {
-						pIt->second->childCount--;
+				executeOnMainThread([this, object]() {
+					// TODO: create method updateParent
+					if(object->parentId != NO_PARENT) {
+						auto pIt = idToCacheObject.find(object->parentId);
+						if(pIt != idToCacheObject.end()) {
+							pIt->second->childCount--;
+						}
 					}
-				}
-			});
-			return;
-		}
+				});
+				return;
+			}
 
-		object->mesh = mesh;
-		object->state = CacheObject::Loaded;
-		currentRequestSize -= object->memory;
-		executeOnMainThread([this, object, mesh, timer]() {
-			//object->state = CacheObject::Loaded;
-			//object->mesh = mesh;
-			//currentRequestSize -= object->memory;
+			object->mesh = mesh;
 			object->memory = mesh->getMainMemoryUsage() + mesh->getGraphicsMemoryUsage();
 			currentMemorySize += object->memory;
-			cache.put(object);
-			--loadingRequests;
-			++accumLoadNumber;
-			accumLoadTime += timer.getMilliseconds();
-		});
-	};
-	object->state = CacheObject::Loading;
-
+			object->state = CacheObject::Loaded;
+			executeOnMainThread([this, object, timer]() {
+				cache.put(object);
+				--loadingRequests;
+				++accumLoadNumber;
+				accumLoadTime += timer.getMilliseconds();
+			});
+		};
+		object->state = CacheObject::Loading;
+	}
 	if(async) {
 		executeAsync(readFn);
 	} else {
@@ -692,6 +732,7 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheO
 }
 
 void SurfelManager::Implementation::doStoreMesh(const StringIdentifier& id, const FileName& filename, Mesh* mesh, bool async) {
+	LOCK(*mutex);
 	auto it = idToCacheObject.find(id);
 	if(it != idToCacheObject.end()) {
 		// FIXME: What happens when the object is currently loading?
@@ -717,9 +758,19 @@ void SurfelManager::Implementation::doStoreMesh(const StringIdentifier& id, cons
 }
 
 void SurfelManager::Implementation::release(CacheObject* object) {
+	LOCK(*mutex);
 	if(object == nullptr) return;
 	idToCacheObject.erase(object->id);
 	CacheObject::releaseCacheObject(object);
+}
+
+void SurfelManager::Implementation::requestHandler() {
+	CacheObject* object = requests.popFront();
+	if(object != nullptr) {
+		if(doLoadMesh(object, false) == Failed)
+			release(object);
+	}
+	executeAsync([this](){requestHandler();});
 }
 
 /******************************************
@@ -807,13 +858,11 @@ uint64_t SurfelManager::getMaxMemory() const { return impl->maxMemory;}
 Util::GenericAttributeMap* SurfelManager::getStats() const { return impl->stats.get(); }
 void SurfelManager::setMemoryLoadFactor(float value) { impl->memoryLoadFactor = value; }
 float SurfelManager::getMemoryLoadFactor() const { return impl->memoryLoadFactor; }
-void SurfelManager::setRequestLimit(uint64_t value) { impl->requestLimit = value; }
-void SurfelManager::setFrameRequestLimit(uint64_t value) { impl->frameRequestLimit = value; }
-void SurfelManager::setMaxPending(uint32_t value) { impl->maxPending = value; };
-void SurfelManager::setSortRequests(bool value) { impl->requests.sortRequests = value; }
-void SurfelManager::setMaxIter(uint32_t value) { impl->maxIter = value; };
-void SurfelManager::setMaxFrameTime(uint32_t value) { impl->maxFrameTime = value; };
-void SurfelManager::setRequestPriorityFn(const SurfelManager::RequestPriorityFn_t& fn) { impl->requests.priorityFn = fn; }
+void SurfelManager::setRequestLimit(uint32_t value) { impl->globalRequestLimit = value; }
+void SurfelManager::setFrameRequestLimit(uint32_t value) { impl->perFrameRequestLimit = value; }
+void SurfelManager::setFrameEvictLimit(uint32_t value) { impl->perFrameEvictLimit = value; };
+void SurfelManager::setRequestQueueSize(uint32_t value) { impl->requests.setMaxSize(value); };
+void SurfelManager::setSortRequests(bool value) { impl->requests.setSortRequests(value); }
 
 } /* namespace ThesisSascha */
 } /* namespace MinSG */

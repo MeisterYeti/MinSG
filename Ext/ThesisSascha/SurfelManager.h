@@ -77,12 +77,12 @@ public:
 	void setMemoryLoadFactor(float value);
 	float getMemoryLoadFactor() const;
 
-	void setRequestLimit(uint64_t value);
-	void setFrameRequestLimit(uint64_t value);
-	void setMaxPending(uint32_t value);
+	void setRequestLimit(uint32_t value);
+	void setFrameRequestLimit(uint32_t value);
+	void setFrameEvictLimit(uint32_t value);
+
 	void setSortRequests(bool value);
-	void setMaxIter(uint32_t value);
-	void setMaxFrameTime(uint32_t value);
+	void setRequestQueueSize(uint32_t value);
 
 	void setRequestPriorityFn(const SurfelManager::RequestPriorityFn_t& fn);
 

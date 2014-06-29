@@ -20,6 +20,9 @@ namespace ThesisSascha {
 
 #define LOCK(mutex) auto lock = Concurrency::createLock(mutex);
 
+#define LOG_STAT(name, value) static StringIdentifier sId ## name(#name); \
+	stats->setValue(sId ## name, GenericAttribute::createNumber(value));
+
 static const uint32_t THREAD_COUNT = 4;
 static const uint32_t REQUEST_QUEUE_SIZE = 8;
 
