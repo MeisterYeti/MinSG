@@ -36,6 +36,36 @@ namespace ThesisSascha {
 using namespace Util;
 using namespace Rendering;
 
+class _DistanceCompare {
+	public:
+		//! (ctor)
+		_DistanceCompare(Geometry::Vec3 _referencePosition) :
+			referencePosition(std::move(_referencePosition)) {
+		}
+	public:
+		bool operator()(const Reference<Node>& a, const Reference<Node>& b) const {
+			volatile const float d1 = getDistance(a.get());
+			volatile const float d2 = getDistance(b.get());
+			volatile const float l1 = getLevel(a.get());
+			volatile const float l2 = getLevel(b.get());
+			return d1 < d2 || ( !(d2 < d1) && ((l1 < l2) || ( !(l2 < l1) && (a.get() < b.get()))));
+		}
+	private:
+		Geometry::Vec3 referencePosition;
+		float getDistance(const Node * a) const {
+			return a->getWorldBB().getDistanceSquared(referencePosition);
+		}
+		float getLevel(const Node * a) const {
+			float lvl = 0;
+			while(a->hasParent()) {
+				a = a->getParent();
+				++lvl;
+			}
+			return lvl;
+		}
+		//! Unimplemented, because the sort order must not be changed for an existing data structure.
+		_DistanceCompare & operator=(const _DistanceCompare & other);
+};
 
 struct FetchResult {
 	enum FetchType_t {
@@ -66,6 +96,7 @@ public:
 
 	float pointSizeFactor = 1.0;
 	float minProjSize = 100;
+	bool sortFront = false;
 private:
 	typedef std::forward_list<Reference<Node>> CacheFront_t;
 	CacheFront_t cacheFront;
@@ -119,13 +150,22 @@ void Renderer::Implementation::renderCacheFront(FrameContext& context, const Ren
 		nodesInFront.insert(root.get());
 	}
 
+	if(sortFront) {
+		Geometry::Vec3 camPos = context.getCamera()->getWorldPosition();
+		/*cacheFront.sort([camPos](const Reference<Node>& n1, const Reference<Node>& n2) {
+			return n1->getWorldBB().getDistanceSquared(camPos) < n2->getWorldBB().getDistanceSquared(camPos);
+		});*/
+		cacheFront.sort(_DistanceCompare(camPos));
+	}
+
 	auto delIt = cacheFront.before_begin();
 	auto it = cacheFront.begin();
 
 	while(it != cacheFront.end()) {
 		Node* node = it->get();
 		Geometry::Rect projRect = context.getProjectedRect(node);
-		float size = projRect.getArea();
+		float vpArea = context.getRenderingContext().getViewport().getArea();
+		float size = std::min(projRect.getArea(), vpArea);
 		float qSize = std::sqrt(size);
 		float distance = node->getWorldBB().getDistanceSquared(context.getCamera()->getWorldPosition());
 
@@ -160,11 +200,9 @@ void Renderer::Implementation::renderCacheFront(FrameContext& context, const Ren
 			} else if(result.type == FetchResult::RenderSurfel) {
 				uint32_t maxCount = result.mesh->isUsingIndexData() ? result.mesh->getIndexCount() : result.mesh->getVertexCount();
 				float coverage = node->findAttribute(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5;
-
 				//uint32_t count = clamp<uint32_t>(coverage*projSize*4, 0, maxCount);
 				uint32_t count = maxCount;
-				float vpArea = context.getRenderingContext().getViewport().getArea();
-				float pSize = std::max(1.0f, std::sqrt((coverage*std::min(size, vpArea))/maxCount)*pointSizeFactor);
+				float pSize = std::max(1.0f, std::sqrt((coverage*size)/maxCount)*pointSizeFactor);
 				Renderer::drawSurfels(context, node, rp, result.mesh.get(), pSize, maxCount);
 
 			}
@@ -248,6 +286,7 @@ Util::GenericAttributeMap* Renderer::getStats() const { return impl->stats.get()
 
 void Renderer::setPointSizeFactor(float value) { impl->pointSizeFactor = value; }
 void Renderer::setMinProjSize(float value) { impl->minProjSize = value; }
+void Renderer::sortFront(bool value) { impl->sortFront = value; }
 
 } /* namespace ThesisSascha */
 } /* namespace MinSG */
