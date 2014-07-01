@@ -85,10 +85,12 @@ public:
 
 	bool isValidFront(Node* node);
 
-	FetchResult fetch(Node* node, float projSize, float distance);
+	FetchResult fetch(FrameContext& context, Node* node, const RenderParam& rp, float projSize, float distance);
+
+	bool display(FrameContext& context, const RenderParam& rp, const FetchResult& result, float projSize, float distance);
 
 	void renderCacheFront(FrameContext& context, const RenderParam& rp);
-	//bool displayNode(FrameContext& context, Node* node, const RenderParam& rp);
+	NodeRendererResult displayNode(FrameContext& context, Node* node, const RenderParam& rp);
 	bool enable(FrameContext & context, Node * node, const RenderParam & rp);
 	void disable(FrameContext & context, Node * node, const RenderParam & rp);
 public:
@@ -97,6 +99,10 @@ public:
 	float pointSizeFactor = 1.0;
 	float minProjSize = 100;
 	bool sortFront = false;
+	bool useFrontRenderer = true;
+	bool includeDistance = true;
+	Timer frameTimer;
+	uint32_t nodesRendered = 0;
 private:
 	typedef std::forward_list<Reference<Node>> CacheFront_t;
 	CacheFront_t cacheFront;
@@ -114,11 +120,28 @@ bool Renderer::Implementation::isValidFront(Node* node) {
 			|| node->findAttribute(MESH_ID) != nullptr;
 }
 
-FetchResult Renderer::Implementation::fetch(Node* node, float projSize, float distance) {
+FetchResult Renderer::Implementation::fetch(FrameContext& context, Node* node, const RenderParam& rp, float size, float distance) {
+	float qSize = std::sqrt(size);
+	float far = context.getCamera()->getFarPlane();
+	float invDistance = far-std::min(distance, far);
+
+	bool cull = includeDistance ? qSize*invDistance < minProjSize*far : qSize < minProjSize ;
+	if (!cull && rp.getFlag(FRUSTUM_CULLING)) {
+		// TODO: autmatically cull child nodes in front?
+		int t = context.getCamera()->testBoxFrustumIntersection(node->getWorldBB());
+		cull = (t == Geometry::Frustum::OUTSIDE);
+	}
+
+	if(!isValidFront(node)) {
+		return {FetchResult::Skip, node, nullptr};
+	} else if(cull) {
+		return {FetchResult::Failed, node, nullptr};
+	}
+
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node->isInstance() ? node->getPrototype() : node);
 	if(geometry != nullptr) {
 		Reference<Mesh> mesh;
-		if(manager->fetchMesh(mesh, geometry, projSize, distance, true, false) == SurfelManager::Success) {
+		if(manager->fetchMesh(mesh, geometry, qSize, distance, true, false) == SurfelManager::Success) {
 			if(mesh.isNull()) {
 				WARN("Empty mesh found! " + node->findAttribute(MESH_ID)->toString());
 				return {FetchResult::Failed, node, nullptr};
@@ -130,8 +153,8 @@ FetchResult Renderer::Implementation::fetch(Node* node, float projSize, float di
 	}
 
 	Reference<Mesh> mesh;
-	SurfelManager::MeshLoadResult_t result = manager->fetchSurfel(mesh, node, projSize, distance, true, false);
-	if(result == SurfelManager::Success ) {
+	SurfelManager::MeshLoadResult_t cacheResult = manager->fetchSurfel(mesh, node, qSize, distance, true, false);
+	if(cacheResult == SurfelManager::Success ) {
 		if(mesh.isNull()) {
 			WARN("Empty surfel mesh found! " + node->findAttribute(SURFEL_ID)->toString());
 			return {FetchResult::Failed, node, nullptr};
@@ -141,10 +164,28 @@ FetchResult Renderer::Implementation::fetch(Node* node, float projSize, float di
 
 	return {FetchResult::Failed, node, nullptr};
 }
+bool Renderer::Implementation::display(FrameContext& context, const RenderParam& rp, const FetchResult& result, float projSize, float distance) {
+	float far = context.getCamera()->getFarPlane();
+	if(result.type == FetchResult::RenderMesh) {
+		Renderer::drawMesh(context, result.node.get(), rp, result.mesh.get());
+		return true;
+	} else if(result.type == FetchResult::RenderSurfel) {
+		uint32_t maxCount = result.mesh->isUsingIndexData() ? result.mesh->getIndexCount() : result.mesh->getVertexCount();
+		float coverage = result.node->findAttribute(SURFEL_REL_COVERING) ? result.node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5;
+		float far = context.getCamera()->getFarPlane();
+		float invDistance = far-std::min(distance, far);
+		//uint32_t count = clamp<uint32_t>(coverage*projSize*4, 0, maxCount);
+		uint32_t count = maxCount;
+		if(count > 0) {
+			float pSize = std::max(1.0f, std::sqrt(coverage*projSize*pointSizeFactor/maxCount));
+			Renderer::drawSurfels(context, result.node.get(), rp, result.mesh.get(), pSize, maxCount);
+		}
+		return true;
+	}
+	return false;
+}
 
 void Renderer::Implementation::renderCacheFront(FrameContext& context, const RenderParam& rp) {
-	static Timer frameTimer;
-	frameTimer.reset();
 	if(cacheFront.empty()) {
 		cacheFront.push_front(root);
 		nodesInFront.insert(root.get());
@@ -166,24 +207,11 @@ void Renderer::Implementation::renderCacheFront(FrameContext& context, const Ren
 		Geometry::Rect projRect = context.getProjectedRect(node);
 		float vpArea = context.getRenderingContext().getViewport().getArea();
 		float size = std::min(projRect.getArea(), vpArea);
-		float qSize = std::sqrt(size);
-		float distance = node->getWorldBB().getDistanceSquared(context.getCamera()->getWorldPosition());
+		float distance = node->getWorldBB().getDistance(context.getCamera()->getWorldPosition());
 
-		//TODO: use refine criteria
-		bool cull = qSize < minProjSize;
-		if (!cull && rp.getFlag(FRUSTUM_CULLING)) {
-			// TODO: autmatically cull child nodes in front?
-			int t = context.getCamera()->testBoxFrustumIntersection(node->getWorldBB());
-			cull = (t == Geometry::Frustum::OUTSIDE);
-		}
-		FetchResult result = {FetchResult::Failed, node, nullptr};
-		if(isValidFront(node)) {
-			if(!cull)
-				result = fetch(node, qSize, distance);
-		} else {
-			result = {FetchResult::Skip, node, nullptr};
-		}
-		if(result.type == FetchResult::Failed) {
+		FetchResult result = fetch(context, node, rp, size, distance);
+
+		if(result.type == FetchResult::Failed ) {
 			// remove node from front and backup to parent
 			if(node->hasParent() && nodesInFront.count(node->getParent()) == 0) {
 				// parent not in front -> add parent to front
@@ -195,17 +223,8 @@ void Renderer::Implementation::renderCacheFront(FrameContext& context, const Ren
 		} else {
 			// fetch successful -> draw and check children
 			// TODO: draw later (sorted)?
-			if(result.type == FetchResult::RenderMesh) {
-				Renderer::drawMesh(context, node, rp, result.mesh.get());
-			} else if(result.type == FetchResult::RenderSurfel) {
-				uint32_t maxCount = result.mesh->isUsingIndexData() ? result.mesh->getIndexCount() : result.mesh->getVertexCount();
-				float coverage = node->findAttribute(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5;
-				//uint32_t count = clamp<uint32_t>(coverage*projSize*4, 0, maxCount);
-				uint32_t count = maxCount;
-				float pSize = std::max(1.0f, std::sqrt((coverage*size)/maxCount)*pointSizeFactor);
-				Renderer::drawSurfels(context, node, rp, result.mesh.get(), pSize, maxCount);
-
-			}
+			if(display(context, rp, result, size, distance))
+				++nodesRendered;
 
 			++it;
 			++delIt;
@@ -220,16 +239,47 @@ void Renderer::Implementation::renderCacheFront(FrameContext& context, const Ren
 			}
 		}
 	}
-	LOG_STAT(renderTime, frameTimer.getMilliseconds());
-	LOG_STAT(frontSize, nodesInFront.size());
+}
+
+NodeRendererResult Renderer::Implementation::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
+	if(useFrontRenderer) {
+		renderCacheFront(context, rp);
+		return NodeRendererResult::NODE_HANDLED;
+	}
+
+	Geometry::Rect projRect = context.getProjectedRect(node);
+	float vpArea = context.getRenderingContext().getViewport().getArea();
+	float size = std::min(projRect.getArea(), vpArea);
+	float distance = node->getWorldBB().getDistance(context.getCamera()->getWorldPosition());
+
+	FetchResult result = fetch(context, node, rp, size, distance);
+
+	if(result.type == FetchResult::Failed ) {
+		return NodeRendererResult::NODE_HANDLED;
+	} else {
+		// TODO: draw later (sorted)?
+		if(display(context, rp, result, size, distance))
+			++nodesRendered;
+	}
+	return NodeRendererResult::PASS_ON;
 }
 
 bool Renderer::Implementation::enable(FrameContext & context, Node * node, const RenderParam & rp) {
-	root = node;
+	frameTimer.reset();
+	nodesRendered = 0;
+	//TODO: clear cache front
+	if(node != nullptr)
+		root = node;
+	if(!useFrontRenderer) {
+		nodesInFront.clear();
+		cacheFront.clear();
+	}
 	return true;
 }
 void Renderer::Implementation::disable(FrameContext & context, Node * node, const RenderParam & rp) {
-
+	LOG_STAT(frontSize, nodesInFront.size());
+	LOG_STAT(renderTime, frameTimer.getMilliseconds());
+	LOG_STAT(nodesRendered, nodesRendered);
 }
 
 void Renderer::drawMesh(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh) {
@@ -267,8 +317,7 @@ Renderer::Renderer(SurfelManager* manager, Util::StringIdentifier channel) : Nod
 Renderer::~Renderer() {}
 
 NodeRendererResult Renderer::displayNode(FrameContext& context, Node* node, const RenderParam& rp) {
-	impl->renderCacheFront(context, rp);
-	return NodeRendererResult::NODE_HANDLED;
+	return impl->displayNode(context, node, rp);
 }
 State* Renderer::clone() const {
 	return new Renderer(impl->manager.get(), this->getSourceChannel());
@@ -287,6 +336,8 @@ Util::GenericAttributeMap* Renderer::getStats() const { return impl->stats.get()
 void Renderer::setPointSizeFactor(float value) { impl->pointSizeFactor = value; }
 void Renderer::setMinProjSize(float value) { impl->minProjSize = value; }
 void Renderer::sortFront(bool value) { impl->sortFront = value; }
+void Renderer::useFrontRenderer(bool value) { impl->useFrontRenderer = value; }
+void Renderer::includeDistance(bool value) { impl->includeDistance = value; }
 
 } /* namespace ThesisSascha */
 } /* namespace MinSG */

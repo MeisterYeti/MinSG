@@ -8,7 +8,6 @@
 #ifdef MINSG_EXT_THESISSASCHA
 
 #include "SurfelManager.h"
-#include "Preprocessor.h"
 #include "Definitions.h"
 #include "RequestQueue.h"
 
@@ -182,13 +181,15 @@ public:
 		if(object == nullptr)
 			return;
 		//std::cout << "releasing cache object " << object->id.toString() << std::endl;
-		//TODO: check for max. pool size
-		cacheObjectPool.push_back(Ptr_t(object));
-		object->state = CacheObject::Free;
-		object->lru = 0;
-		object->usage = 0;
-		object->memory = 0;
-		object->mesh = nullptr;
+		Ptr_t objPtr(object);
+		if(cacheObjectPool.size() < MAX_POOL_SIZE) {
+			cacheObjectPool.push_back(std::move(objPtr));
+			object->state = CacheObject::Free;
+			object->lru = 0;
+			object->usage = 0;
+			object->memory = 0;
+			object->mesh = nullptr;
+		}
 	}
 };
 
@@ -263,18 +264,17 @@ public:
 class SurfelManager::Implementation {
 public:
 
-	Implementation(SurfelManager* m, Preprocessor* p, const FileName& basePath, uint64_t maxMemory);
+	Implementation(SurfelManager* m, const FileName& basePath, uint64_t maxMemory);
 	~Implementation() = default;
 public:
 	// "public" fields
 	WeakPointer<SurfelManager> manager;
-	Reference<Preprocessor> preprocessor;
 	FileName basePath;
 	uint64_t maxMemory;
-	float memoryLoadFactor = 0.8;
+	double memoryLoadFactor = 0.8;
 
-	uint32_t perFrameRequestLimit = 10;
-	uint32_t globalRequestLimit = 100;
+	uint32_t perFrameReleaseLimit = 10;
+	uint32_t minReleaseLimit = 100;
 	uint32_t perFrameEvictLimit = 100;
 
 	std::unique_ptr<GenericAttributeMap> stats;
@@ -318,8 +318,8 @@ public:
 	uint64_t accumLoadNumber = 0;
 };
 
-SurfelManager::Implementation::Implementation(SurfelManager* m, Preprocessor* p, const FileName& basePath, uint64_t maxMemory) :
-		mutex(createMutex()), manager(m), preprocessor(p), basePath(basePath), maxMemory(maxMemory), currentMemorySize(0),
+SurfelManager::Implementation::Implementation(SurfelManager* m, const FileName& basePath, uint64_t maxMemory) :
+		mutex(createMutex()), manager(m), basePath(basePath), maxMemory(maxMemory), currentMemorySize(0),
 		stats(new GenericAttributeMap) {
 }
 
@@ -328,14 +328,14 @@ void SurfelManager::Implementation::init() {
 		threadPool.push_back(std::unique_ptr<WorkerThread>(new WorkerThread(manager.get())));
 		executeAsync([this](){requestHandler();});
 	}
-	// FIXME: might be faster to directly use std::malloc for a consecutive memory block
-	for(uint_fast32_t i = 0; i < INITIAL_POOL_SIZE; ++i) {
+	for(uint_fast32_t i = 0; i < MAX_POOL_SIZE; ++i) {
 		CacheObject::cacheObjectPool.push_back(CacheObject::Ptr_t(new CacheObject(NO_PARENT)));
 	}
+	CacheObject::cacheObjectPool.shrink_to_fit();
 
 	requests.setPriorityFunction([this](const CacheObject* obj){
 		//return std::sqrt(obj->minDistance) / std::max(1.0f, obj->projSize);
-		return std::sqrt(obj->minDistance)*std::pow(std::max(1U, frameNumber-obj->lru), 2);
+		return std::sqrt(obj->minDistance);//*std::pow(std::max(1U, frameNumber-obj->lru), 2);
 	});
 
 }
@@ -355,7 +355,7 @@ void SurfelManager::Implementation::update() {
 	LOG_STAT(requestQueue5, requests.size(5));
 	LOG_STAT(requestQueue6, requests.size(6));
 	LOG_STAT(requestQueue7, requests.size(7));
-	LOG_STAT(cacheObjects, idToCacheObject.size());
+	LOG_STAT(cacheObjects, cache.size());
 	LOG_STAT(accumLoadTime, accumLoadTime);
 	LOG_STAT(accumLoadNumber, accumLoadNumber);
 	LOG_STAT(avgLoadTime, accumLoadNumber>0?accumLoadTime/accumLoadNumber:0);
@@ -367,27 +367,28 @@ void SurfelManager::Implementation::update() {
 	cacheMisses = 0;
 
 	LOG_STAT(jobQueueSize, mainThreadQueue.size());
-	while(!mainThreadQueue.empty()) {
+	while(!mainThreadQueue.empty() && timer.getMilliseconds() < 10) {
 		// never blocks since this is the only thread that removes jobs from this queue
 		mainThreadQueue.pop()();
 	}
 	LOG_STAT(jobQueueTime, timer.getMilliseconds());
 	timer.reset();
 
-	requests.update();
-	uint64_t frameRequests = 0;
-	uint32_t handled = 0;
-	//remove some requests to avoid starvation
-	//FIXME: misuse of deprecated variables
-	for(frameRequests = 0; frameRequests < perFrameRequestLimit && requests.size() > globalRequestLimit; ++frameRequests) {
-		release(requests.tryPopBack());
-	}
-	LOG_STAT(requestTime, timer.getMilliseconds());
-	LOG_STAT(requestsHandled, frameRequests);
-	timer.reset();
+	executeAsync([this](){
+		//Timer relTimer;
+		//relTimer.reset();
+		requests.update();
+		//remove some requests to avoid starvation
+		//FIXME: misuse of deprecated variables
+		for(uint64_t i = 0; i < perFrameReleaseLimit && requests.size() > minReleaseLimit; ++i) {
+			release(requests.tryPopBack());
+		}
+		//float time = relTimter.getMilliseconds();
+		//executeOnMainThread([this,time](){LOG_STAT(requestTime, time);});
+	});
 
 	if(currentMemorySize > maxMemory * memoryLoadFactor) {
-		for(uint32_t i=0; (i<perFrameEvictLimit && currentMemorySize > maxMemory * memoryLoadFactor) || currentMemorySize > maxMemory; ++i) {
+		for(uint32_t i=0; ((i<perFrameEvictLimit && currentMemorySize > maxMemory * memoryLoadFactor) || currentMemorySize > maxMemory) && timer.getMilliseconds() < 30; ++i) {
 			CacheObject* obj = cache.evict();
 			if(obj != nullptr) {
 				currentMemorySize -= obj->memory;
@@ -503,7 +504,7 @@ bool SurfelManager::Implementation::isCached(const StringIdentifier& id) const {
 }
 
 SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheObject* object, bool async) {
-	if(!object || object->isFree()) return Failed;
+	if(!object || object->isFree() || currentMemorySize >= maxMemory) return Failed;
 	if(!object->isPending()) return Pending;
 
 	std::function<void()> readFn = [](){};
@@ -531,10 +532,23 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheO
 		++loadingRequests;
 		Util::Timer timer;
 		readFn = [this, object, filename, timer] () {
+			if(currentMemorySize >= maxMemory) {
+				executeOnMainThread([this, object]() {
+					// TODO: create method updateParent
+					if(object->parentId != NO_PARENT) {
+						auto pIt = idToCacheObject.find(object->parentId);
+						if(pIt != idToCacheObject.end()) {
+							pIt->second->childCount--;
+						}
+					}
+					object->state = CacheObject::Free;
+					release(object);
+				});
+				return;
+			}
 			Reference<Mesh> mesh = Serialization::loadMesh(filename);
 			if(mesh.isNull()) {
 				WARN("Could not load mesh: " + filename.toString());
-				object->state = CacheObject::Pending;
 
 				executeOnMainThread([this, object]() {
 					// TODO: create method updateParent
@@ -544,6 +558,8 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheO
 							pIt->second->childCount--;
 						}
 					}
+					object->state = CacheObject::Free;
+					release(object);
 				});
 				return;
 			}
@@ -637,7 +653,7 @@ void WorkerThread::run() {
  * SurfelManager class
  ******************************************/
 
-SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory, uint64_t maxReservedMemory) : impl(new Implementation(this, new Preprocessor(this), basePath, maxMemory)) {
+SurfelManager::SurfelManager(const Util::FileName& basePath, uint64_t maxMemory, uint64_t maxReservedMemory) : impl(new Implementation(this, basePath, maxMemory)) {
 	impl->init();
 }
 
@@ -686,17 +702,16 @@ void SurfelManager::flush() { impl->flush(); }
 void SurfelManager::executeAsync(const std::function<void()>& function) { impl->executeAsync(function); }
 void SurfelManager::executeOnMainThread(const std::function<void()>& function) {impl->executeOnMainThread(function); }
 
-Preprocessor* SurfelManager::getPreprocessor() const { return impl->preprocessor.get(); }
 const Util::FileName SurfelManager::getBasePath() const { return impl->basePath; }
 void SurfelManager::setBasePath(const std::string& filename) { impl->basePath = FileName(filename); }
 void SurfelManager::setBasePath(const Util::FileName& filename) { impl->basePath = filename; }
-void SurfelManager::setMaxMemory(uint64_t value) { impl->maxMemory = value; }
-uint64_t SurfelManager::getMaxMemory() const { return impl->maxMemory;}
+void SurfelManager::setMaxMemory(uint32_t value) { impl->maxMemory = MB_TO_BYTE(value); }
+uint32_t SurfelManager::getMaxMemory() const { return BYTE_TO_MB(impl->maxMemory);}
 Util::GenericAttributeMap* SurfelManager::getStats() const { return impl->stats.get(); }
-void SurfelManager::setMemoryLoadFactor(float value) { impl->memoryLoadFactor = value; }
-float SurfelManager::getMemoryLoadFactor() const { return impl->memoryLoadFactor; }
-void SurfelManager::setRequestLimit(uint32_t value) { impl->globalRequestLimit = value; }
-void SurfelManager::setFrameRequestLimit(uint32_t value) { impl->perFrameRequestLimit = value; }
+void SurfelManager::setMemoryLoadFactor(double value) { impl->memoryLoadFactor = value; }
+double SurfelManager::getMemoryLoadFactor() const { return impl->memoryLoadFactor; }
+void SurfelManager::setMinReleaseLimit(uint32_t value) { impl->minReleaseLimit = value; }
+void SurfelManager::setFrameReleaseLimit(uint32_t value) { impl->perFrameReleaseLimit = value; }
 void SurfelManager::setFrameEvictLimit(uint32_t value) { impl->perFrameEvictLimit = value; };
 void SurfelManager::setRequestQueueSize(uint32_t value) { impl->requests.setMaxSize(value); };
 void SurfelManager::setSortRequests(bool value) { impl->requests.setSortRequests(value); }
