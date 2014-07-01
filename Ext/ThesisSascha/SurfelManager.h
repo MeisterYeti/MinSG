@@ -33,7 +33,6 @@ class Node;
 class GeometryNode;
 
 namespace ThesisSascha {
-class Preprocessor;
 
 class SurfelManager : public Util::ReferenceCounter<SurfelManager>, public Util::AttributeProvider {
 	PROVIDES_TYPE_NAME(SurfelManager)
@@ -66,19 +65,18 @@ public:
 	void executeAsync(const std::function<void()>& function);
 	void executeOnMainThread(const std::function<void()>& function);
 
-	Preprocessor* getPreprocessor() const;
 	const Util::FileName getBasePath() const;
 	void setBasePath(const std::string& filename);
 	void setBasePath(const Util::FileName& filename);
 
-	void setMaxMemory(uint64_t value);
-	uint64_t getMaxMemory() const;
+	void setMaxMemory(uint32_t value); // MB
+	uint32_t getMaxMemory() const; // MB
 
-	void setMemoryLoadFactor(float value);
-	float getMemoryLoadFactor() const;
+	void setMemoryLoadFactor(double value);
+	double getMemoryLoadFactor() const;
 
-	void setRequestLimit(uint32_t value);
-	void setFrameRequestLimit(uint32_t value);
+	void setMinReleaseLimit(uint32_t value);
+	void setFrameReleaseLimit(uint32_t value);
 	void setFrameEvictLimit(uint32_t value);
 
 	void setSortRequests(bool value);

@@ -52,6 +52,8 @@ public:
 	void setPointSizeFactor(float value);
 	void setMinProjSize(float value);
 	void sortFront(bool value);
+	void useFrontRenderer(bool value);
+	void includeDistance(bool value);
 
 	static void drawMesh(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh);
 	static void drawSurfels(FrameContext& context, Node* node, const RenderParam& rp, Rendering::Mesh* mesh, float pSize, uint32_t count);

@@ -11,7 +11,6 @@ minsg_add_sources(
 	Renderer.cpp
 	SurfelManager.cpp
 	ImportHandler.cpp
-	DataStrategy.cpp
 	GreedyProjectionTriangulation.cpp
 	Profiler.cpp
 )

@@ -110,8 +110,8 @@ class RequestQueue {
 			// resort some elements to avoid starvation
 			for (uint32_t i = 0; i < QueueCount; ++i) {
 				if(!queues[i].empty()) {
-					auto co = queues[i].back();
-					queues[i].pop_back();
+					auto co = queues[i].front();
+					queues[i].pop_front();
 					uint32_t p = clamp < uint32_t > (getQueueIndexFromPriority(co), 0, QueueCount - 1);
 					queues[p].push_front(co);
 				}

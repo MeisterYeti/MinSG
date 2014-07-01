@@ -18,15 +18,18 @@
 namespace MinSG {
 namespace ThesisSascha {
 
+#define MB_TO_BYTE(value) value * 1048576UL
+#define BYTE_TO_MB(value) static_cast<uint32_t>(value / 1048576UL)
+
 #define LOCK(mutex) auto lock = Util::Concurrency::createLock(mutex);
 
 #define LOG_STAT(name, value) static StringIdentifier sId ## name(#name); \
 	stats->setValue(sId ## name, GenericAttribute::createNumber(value));
 
-static const uint32_t THREAD_COUNT = 4;
+static const uint32_t THREAD_COUNT = 2;
 static const uint32_t REQUEST_QUEUE_SIZE = 8;
 
-static const size_t INITIAL_POOL_SIZE = 200;
+static const size_t MAX_POOL_SIZE = 1000;
 
 typedef Util::WrapperAttribute<Util::StringIdentifier> StringIDAttribute_t;
 const std::string GATypeNameStringIdentifier("StringIdentifier");

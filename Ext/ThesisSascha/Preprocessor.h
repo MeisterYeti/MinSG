@@ -88,7 +88,7 @@ private:
 	float verticalResolution;
 
 	BlueSurfels::SurfelGenerator* surfelGenerator;
-	Util::WeakPointer<SurfelManager> manager;
+	Util::Reference<SurfelManager> manager;
 	Util::Reference<InternalRenderer> internalRenderer;
 
 	std::function<bool(Node*,float)> abortUpdate;
