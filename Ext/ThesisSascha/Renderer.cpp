@@ -122,12 +122,13 @@ bool Renderer::Implementation::isValidFront(Node* node) {
 
 FetchResult Renderer::Implementation::fetch(FrameContext& context, Node* node, const RenderParam& rp, float size, float distance) {
 	float qSize = std::sqrt(size);
-	float far = context.getCamera()->getFarPlane();
-	float invDistance = far-std::min(distance, far);
+	float farPlane = context.getCamera()->getFarPlane();
+	float invDistance = farPlane-std::min(distance, farPlane);
 
-	bool cull = includeDistance ? qSize*invDistance < minProjSize*far : qSize < minProjSize;
+	bool cull = includeDistance ? qSize*invDistance < minProjSize*farPlane : qSize < minProjSize;
 	if(node == root.get() || node->getParent() == root.get())
 		cull = false;
+
 	if (!cull && rp.getFlag(FRUSTUM_CULLING)) {
 		// TODO: autmatically cull child nodes in front?
 		int t = context.getCamera()->testBoxFrustumIntersection(node->getWorldBB());
@@ -167,17 +168,19 @@ FetchResult Renderer::Implementation::fetch(FrameContext& context, Node* node, c
 	return {FetchResult::Failed, node, nullptr};
 }
 bool Renderer::Implementation::display(FrameContext& context, const RenderParam& rp, const FetchResult& result, float projSize, float distance) {
-	float far = context.getCamera()->getFarPlane();
 	//if(!manager->isInFront(result.node.get()))
 	//	return false;
+
+	float farPlane = context.getCamera()->getFarPlane();
+
 	if(result.type == FetchResult::RenderMesh) {
 		Renderer::drawMesh(context, result.node.get(), rp, result.mesh.get());
 		return true;
 	} else if(result.type == FetchResult::RenderSurfel) {
 		uint32_t maxCount = result.mesh->isUsingIndexData() ? result.mesh->getIndexCount() : result.mesh->getVertexCount();
 		float coverage = result.node->findAttribute(SURFEL_REL_COVERING) ? result.node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5;
-		float far = context.getCamera()->getFarPlane();
-		float invDistance = far-std::min(distance, far);
+		float farPlane = context.getCamera()->getFarPlane();
+		float invDistance = farPlane-std::min(distance, farPlane);
 		//uint32_t count = clamp<uint32_t>(coverage*projSize*4, 0, maxCount);
 		uint32_t count = maxCount;
 		if(count > 0) {
