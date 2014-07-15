@@ -56,6 +56,27 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <sstream>
+#include <string>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+
+// Stupid MinGW doesn't define to_string
+// this is a workaround
+namespace std_fallback {
+	template<typename T>
+	std::string to_string(T val) {
+		std::ostringstream ss;
+		ss << val;
+		return ss.str();
+	};
+}
+namespace std {
+	using namespace std_fallback;
+}
 
 namespace MinSG {
 
@@ -220,8 +241,8 @@ bool GreedyProjectionTriangulation::reconstruct(Rendering::Mesh* source) {
 		return false;
 
 	// TODO: make user choose between new mesh and inplace surface generation
-	source->setDrawMode(Mesh::DRAW_TRIANGLES);
-	source->setUseIndexData(true);
+	//source->setDrawMode(Mesh::DRAW_TRIANGLES);
+	//source->setUseIndexData(true);
 	MeshIndexData& iData = source->openIndexData();
 	iData.releaseLocalData();
 	iData.allocate(indices_.size());

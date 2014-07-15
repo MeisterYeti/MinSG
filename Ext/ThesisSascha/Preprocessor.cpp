@@ -13,6 +13,7 @@
 #include "Preprocessor.h"
 #include "SurfelManager.h"
 #include "Renderer.h"
+#include "GreedyProjectionTriangulation.h"
 
 #include <Geometry/Frustum.h>
 #include <Geometry/Tools.h>
@@ -620,7 +621,37 @@ Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContex
 	SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
 	std::cerr << std::flush;
 	std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-	return nullptr;
+	return generateMeshFromSurfels(frameContext, surfels.first.detachAndDecrease(), true);
+}
+
+Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContext, Rendering::Mesh* surfelMesh, bool inplace) {
+	Reference<Mesh> mesh = surfelMesh;
+	// Initialize triangulator
+	MinSG::GreedyProjectionTriangulation gp3;
+
+	//TODO: parameterize
+	float radius = 100;
+	uint32_t maxNN = 100;
+
+	// Set the maximum distance between connected points (maximum edge length)
+	gp3.setSearchRadius (radius);
+
+	// Set typical values for the parameters
+	gp3.setMu (2.5);
+	gp3.setMaximumNearestNeighbors (maxNN);
+	gp3.setMaximumSurfaceAngle(M_PI); // 45 degrees
+	//gp3.setMinimumAngle(0); // 10 degrees
+	gp3.setMaximumAngle(M_PI); // 120 degrees
+	gp3.setNormalConsistency(true);
+	gp3.setConsistentVertexOrdering(true);
+
+	// Get result
+	gp3.reconstruct (mesh.get());
+
+	// enable triangle mode and index buffer
+	mesh->setDrawMode(Mesh::DRAW_TRIANGLES);
+	mesh->setUseIndexData(true);
+	return mesh.detachAndDecrease();
 }
 
 } /* namespace ThesisSascha */

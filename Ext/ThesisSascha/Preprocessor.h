@@ -71,6 +71,7 @@ public:
 	void setMaxComplexity(uint32_t value) { maxComplexity = value; }
 
 	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Node* node);
+	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Rendering::Mesh* surfelMesh, bool inplace);
 private:
 	class InternalRenderer;
 
