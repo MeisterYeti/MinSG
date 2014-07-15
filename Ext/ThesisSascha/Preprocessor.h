@@ -27,6 +27,7 @@
 
 #include <functional>
 #include <vector>
+#include <memory>
 
 namespace Rendering {
 class Shader;
@@ -48,56 +49,34 @@ class SurfelManager;
 class Preprocessor : public Util::AttributeProvider, public Util::ReferenceCounter<Preprocessor> {
 	PROVIDES_TYPE_NAME(Preprocessor)
 public:
-	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
-	typedef std::vector<Util::Reference<Rendering::Texture> > SurfelTextures_t;
 
 	Preprocessor(SurfelManager* manager);
 	virtual ~Preprocessor();
 
 	void initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader);
 
-	void process(FrameContext& frameContext, Node* root, bool async = true);
+	void process(FrameContext& frameContext, Node* root, bool async = true, bool dryRun = false);
 
 	void updateSurfels(FrameContext& frameContext, Node* node, float coverage=1.0f, bool async = true);
 
-	void setAbortUpdateFn(const std::function<bool(Node*,float)> & function) { this->abortUpdate = function; }
+	void setAbortUpdateFn(const std::function<bool(Node*,float)> & function);
 
-	void setUpdateProgressFn(const std::function<void(uint32_t,uint32_t)> & function) { this->updateProgress = function; }
-
+	void setUpdateProgressFn(const std::function<void(uint32_t,uint32_t)> & function);
+	
 	uint32_t getMaxAbsSurfels()const;
 	float getReusalRate()const;
 	void setMaxAbsSurfels(uint32_t i);
 	void setReusalRate(float f);
-	void setMaxComplexity(uint32_t value) { maxComplexity = value; }
+	void setMaxComplexity(uint32_t value);
 
+	void setVerticalResolution(float f);
+	
 	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Node* node);
+
+	Util::GenericAttributeMap * getStats() const;
 private:
-	class InternalRenderer;
-
-	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
-	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
-	void visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async);
-	Rendering::Mesh* combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize);
-
-	Util::Reference<Rendering::Shader> mrtShader;
-	Util::Reference<Rendering::Shader> sizeShader;
-	std::vector<Util::Reference<MinSG::CameraNodeOrtho> > cameras;
-
-	static Geometry::Vec3 directions[];
-
-	float verticalResolution;
-
-	BlueSurfels::SurfelGenerator* surfelGenerator;
-	Util::Reference<SurfelManager> manager;
-	Util::Reference<InternalRenderer> internalRenderer;
-
-	std::function<bool(Node*,float)> abortUpdate;
-
-	std::function<void(uint32_t,uint32_t)> updateProgress;
-
-	uint32_t processed;
-	uint32_t nodeCount;
-	uint32_t maxComplexity;
+	class Implementation;
+	std::unique_ptr<Implementation> impl;
 };
 
 } /* namespace ThesisSascha */

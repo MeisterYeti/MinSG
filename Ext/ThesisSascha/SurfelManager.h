@@ -57,6 +57,7 @@ public:
 	MeshLoadResult_t fetchMesh(Util::Reference<Rendering::Mesh>& out, Node* node, float projSize, float distance, bool async = false, bool force=false);
 
 	bool isCached(Node* node);
+	bool isInFront(Node* node);
 
 	void update();
 	void clear();
