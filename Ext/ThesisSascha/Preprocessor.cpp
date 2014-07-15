@@ -46,11 +46,17 @@
 #include <Util/StringUtils.h>
 #include <Util/Timer.h>
 #include <Util/Utils.h>
+#include <Util/Concurrency/Concurrency.h>
+#include <Util/Concurrency/Mutex.h>
+#include <Util/Concurrency/Lock.h>
 
 #include <string>
 #include <functional>
 #include <algorithm>
 #include <stdexcept>
+#include <atomic>
+#include <deque>
+#include <array>
 
 #define COLOR 0
 #define POSITION 1
@@ -105,17 +111,6 @@ void forEachNodeBottomUp(Node * root, const VisitNodeStatusFn_t& enterFun, const
 	root->traverse(visitor);
 }
 
-Geometry::Vec3 Preprocessor::directions[8] = {
-	Geometry::Vec3(1,1,1).normalize(),
-	Geometry::Vec3(1,1,-1).normalize(),
-	Geometry::Vec3(1,-1,1).normalize(),
-	Geometry::Vec3(1,-1,-1).normalize(),
-	Geometry::Vec3(-1,1,1).normalize(),
-	Geometry::Vec3(-1,1,-1).normalize(),
-	Geometry::Vec3(-1,-1,1).normalize(),
-	Geometry::Vec3(-1,-1,-1).normalize(),
-};
-
 void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worldDir, Node* node) {
 	Geometry::Vec3 nodeCenter = node->getWorldBB().getCenter();
 
@@ -133,7 +128,6 @@ void updateEnclosingOrthoCam(CameraNodeOrtho* camera, const Geometry::Vec3& worl
 }
 
 NodeVisitor::status generateId(Node * node, uint32_t level) {
-	node->setAttribute(NODE_LEVEL, GenericAttribute::createNumber(level));
 	if(node->isInstance())
 		node = node->getPrototype();
 	if(!node->findAttribute(SURFEL_ID)) {
@@ -145,35 +139,65 @@ NodeVisitor::status generateId(Node * node, uint32_t level) {
 	return NodeVisitor::CONTINUE_TRAVERSAL;
 }
 
-uint32_t countComplexity(Node * root) {
-	uint32_t complexity = 0;
-	forEachNodeTopDown<Node>(root,[&complexity](Node* node){
-		if(node->isInstance())
-			node = node->getPrototype();
-		if(node->findAttribute(NODE_COMPLEXITY)) {
-			complexity += node->findAttribute(NODE_COMPLEXITY)->toUnsignedInt();
-			return;
-		}
-		//TODO: external nodes?
-		complexity += node->findAttribute(MESH_COMPLEXITY) ? node->findAttribute(MESH_COMPLEXITY)->toUnsignedInt() : 0;
-		GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
-		if(geometry != nullptr) {
-			Mesh* mesh = geometry->getMesh();
-			if(mesh != nullptr)
-				complexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
-		}
-		node->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(complexity));
+/******************************************
+ * Preprocessor Implementation class
+ ******************************************/
+class Preprocessor::Implementation {
+public:
+	typedef std::pair<Util::Reference<Rendering::Mesh>,float> SurfelInfo_t;
+	typedef std::vector<Util::Reference<Rendering::Texture> > SurfelTextures_t;
 
-	});
-	return complexity;
-}
+	Implementation(SurfelManager* manager);
+	~Implementation() = default;
+	
+	uint32_t countComplexity(Node * root);
+	void initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader);
+	void process(FrameContext& frameContext, Node* root, bool async, bool dryRun);
+	void updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async);
+
+	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Node* node);
+
+//private:
+	class InternalRenderer;
+
+	void updateProgressInternal(uint32_t processed, uint32_t nodeCount);
+	SurfelTextures_t renderSurfelTexturesForNode(FrameContext& frameContext, Node* node);
+	void buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async);
+	void visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async);
+	Rendering::Mesh* combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize);
+
+	Util::Reference<Rendering::Shader> mrtShader;
+	Util::Reference<Rendering::Shader> sizeShader;
+	std::vector<Util::Reference<MinSG::CameraNodeOrtho> > cameras;
+
+	static Geometry::Vec3 directions[];
+
+	float verticalResolution;
+
+	std::unique_ptr<BlueSurfels::SurfelGenerator> surfelGenerator;
+	Util::Reference<SurfelManager> manager;
+	Util::Reference<InternalRenderer> internalRenderer;
+
+	std::function<bool(Node*,float)> abortUpdate;
+
+	std::function<void(uint32_t,uint32_t)> updateProgress;
+
+	uint32_t processed;
+	uint32_t nodeCount;
+	uint32_t maxComplexity;
+	std::atomic<uint32_t> inProgress;
+
+	std::unique_ptr<Util::GenericAttributeMap> stats;
+	std::unique_ptr<Concurrency::Mutex> mutex;
+};
+
 
 /******************************************
- * internal renderer
+ * internal renderer class
  ******************************************/
-class Preprocessor::InternalRenderer : public NodeRendererState {
+class Preprocessor::Implementation::InternalRenderer : public NodeRendererState {
 public:
-	InternalRenderer(Preprocessor* p, Util::StringIdentifier channel = FrameContext::DEFAULT_CHANNEL) : NodeRendererState(channel), processor(p), root(nullptr) {}
+	InternalRenderer(Preprocessor::Implementation* p, Util::StringIdentifier channel = FrameContext::DEFAULT_CHANNEL) : NodeRendererState(channel), processor(p), root(nullptr) {}
 	virtual ~InternalRenderer() = default;
 
 	virtual NodeRendererResult displayNode(FrameContext & context, Node * node, const RenderParam & rp);
@@ -183,76 +207,28 @@ protected:
 	stateResult_t doEnableState(FrameContext & context, Node * node, const RenderParam & rp) override;
 	void doDisableState(FrameContext & context, Node * node, const RenderParam & rp) override;
 private:
-	WeakPointer<Preprocessor> processor;
+	WeakPointer<Preprocessor::Implementation> processor;
 	Node* root;
 };
-
-NodeRendererResult Preprocessor::InternalRenderer::displayNode(FrameContext & context, Node * node, const RenderParam & rp) {
-	processor->manager->update();
-	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node->isInstance() ? node->getPrototype() : node);
-	if(geometry) {
-		if(geometry->getMesh()->getVertexCount() > 0) {
-			return NodeRendererResult::PASS_ON;
-		} else if(node->findAttribute(MESH_ID)) {
-			SurfelManager::MeshLoadResult_t result;
-			// force mesh loading
-			Reference<Mesh> mesh;
-			if( processor->manager->fetchMesh(mesh,geometry,9999,0,false, true) == SurfelManager::Success) {
-				if(mesh.isNull()) {
-					return NodeRendererResult::PASS_ON;
-				}
-				Renderer::drawMesh(context, node, rp, mesh.get() );
-				return NodeRendererResult::PASS_ON;
-			}
-		}
-	}
-
-	// don't render root node
-	if(node == root || node->findAttribute(SURFEL_ID) == nullptr) {
-		return NodeRendererResult::PASS_ON;
-	}
-
-	uint32_t depth = 0;
-	Node* tmp = node;
-	while(tmp->hasParent() && tmp != root) {
-		++depth;
-		tmp = tmp->getParent();
-	}
-
-	NodeRendererResult renderResult = NodeRendererResult::PASS_ON;
-	if(depth >= MAX_DEPTH) {
-		renderResult = NodeRendererResult::NODE_HANDLED;
-	}
-
-	SurfelManager::MeshLoadResult_t result;
-	// force mesh loading
-	Reference<Mesh> mesh;
-	if( processor->manager->fetchSurfel(mesh,node,9999,0,false, true) == SurfelManager::Success) {
-		if(mesh.isNull()) {
-			return renderResult;
-		}
-		uint32_t count = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
-		Renderer::drawSurfels(context, node, rp, mesh.get() , 4, count);
-		return renderResult;
-	}
-	return renderResult;
-}
-
-State::stateResult_t Preprocessor::InternalRenderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
-	root = node;
-	return NodeRendererState::doEnableState(context,node,rp);
-}
-
-void Preprocessor::InternalRenderer::doDisableState(FrameContext & context, Node * node, const RenderParam & rp) {
-	root = nullptr;
-	NodeRendererState::doDisableState(context,node,rp);
-}
 /******************************************
- * Preprocessor
+ * Preprocessor Implementation
  ******************************************/
 
-Preprocessor::Preprocessor(SurfelManager* manager) :
-		verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager), nodeCount(0), processed(0), maxComplexity(10000) {
+Geometry::Vec3 Preprocessor::Implementation::directions[8] = {
+	Geometry::Vec3(1,1,1).normalize(),
+	Geometry::Vec3(1,1,-1).normalize(),
+	Geometry::Vec3(1,-1,1).normalize(),
+	Geometry::Vec3(1,-1,-1).normalize(),
+	Geometry::Vec3(-1,1,1).normalize(),
+	Geometry::Vec3(-1,1,-1).normalize(),
+	Geometry::Vec3(-1,-1,1).normalize(),
+	Geometry::Vec3(-1,-1,-1).normalize(),
+};
+
+
+Preprocessor::Implementation::Implementation(SurfelManager* manager) :
+		verticalResolution(256), surfelGenerator(new BlueSurfels::SurfelGenerator()), manager(manager), processed(0), nodeCount(0),
+		maxComplexity(10000), inProgress(0), stats(new GenericAttributeMap()), mutex(Concurrency::createMutex()) {
 	// TODO: parameterize
 	surfelGenerator->setReusalRate(0.9);
 	internalRenderer = new InternalRenderer(this);
@@ -262,11 +238,175 @@ Preprocessor::Preprocessor(SurfelManager* manager) :
 	};
 }
 
-Preprocessor::~Preprocessor() {
-	delete surfelGenerator;
+uint32_t Preprocessor::Implementation::countComplexity(Node * root) {
+	uint32_t complexity = 0;
+	traverseTopDown<Node>(root,[this, &complexity](Node* node){
+		if(node->isInstance())
+			node = node->getPrototype();
+
+		if(node->findAttribute(NODE_COMPLEXITY)) {
+			complexity += node->findAttribute(NODE_COMPLEXITY)->toUnsignedInt();
+			return NodeVisitor::BREAK_TRAVERSAL;
+		}
+		//TODO: external nodes?
+		complexity += node->findAttribute(MESH_COMPLEXITY) ? node->findAttribute(MESH_COMPLEXITY)->toUnsignedInt() : 0;
+		GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
+		if(node->findAttribute(MESH_ID)) {
+			// force mesh loading
+			Reference<Mesh> mesh;
+			if( manager->fetchMesh(mesh,geometry,9999,0,false, true) == SurfelManager::Success) {
+				if(mesh.isNotNull()) {
+					complexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
+				}
+			}
+		} else if(geometry != nullptr) {
+			Mesh* mesh = geometry->getMesh();
+			if(mesh != nullptr)
+				complexity += mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();				
+		}
+		return NodeVisitor::CONTINUE_TRAVERSAL;
+	});
+	root->setAttribute(NODE_COMPLEXITY, GenericAttribute::createNumber(complexity));
+	return complexity;
 }
 
-Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameContext& frameContext, Node* node) {
+
+void Preprocessor::Implementation::initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader) {
+	cameras.clear();
+
+	// Create cameras
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+	cameras.push_back(new CameraNodeOrtho());
+
+	this->mrtShader = mrtShader;
+	this->sizeShader = sizeShader;
+}
+
+using std::placeholders::_1;
+using std::placeholders::_2;
+void Preprocessor::Implementation::process(FrameContext& frameContext, Node* root, bool async, bool dryRun) {
+
+	stats->clear();
+	processed = 0;
+	nodeCount = 0;
+	uint32_t maxLevel = 0;
+
+	// Count and initialize nodes
+	forEachNodeBottomUp(root, [&] (Node* node, uint32_t level) {
+		node->setAttribute(NODE_LEVEL, GenericAttribute::createNumber(level));
+		++nodeCount;
+		maxLevel = std::max(level, maxLevel);
+		return NodeVisitor::CONTINUE_TRAVERSAL;
+	}, [&] (Node* node, uint32_t level) {
+		countComplexity(node);
+	});
+
+
+	static Timer timer;
+	timer.reset();
+
+	typedef std::deque<Node*> LevelQueue_t;
+	std::vector<LevelQueue_t> levels(maxLevel+1);
+
+	uint32_t todo = 0;
+	
+	//VisitNodeFn_t visit = std::bind(&Preprocessor::Implementation::visitNode, this, std::ref(frameContext), _1, _2, async);
+	forEachNodeTopDown(root, [&](Node* node){
+		uint32_t complexity = node->getAttribute(NODE_COMPLEXITY)->toUnsignedInt();
+		if(complexity >= maxComplexity) {
+			++todo;
+			uint32_t level = node->getAttribute(NODE_LEVEL)->toUnsignedInt();
+			levels[level].push_back(node);
+		}
+	});
+	
+	uint32_t maxJobs = 100;
+	uint32_t jobs = 0;
+	inProgress = 0;
+	
+	updateProgressInternal(processed, todo);
+	
+	// traverse tree level by level (bottom up) to increase parallelizability
+	for(int32_t i=maxLevel; i>=0; --i) {
+		while(!levels[i].empty()) {
+			++inProgress;
+			if(!dryRun)
+				visitNode(frameContext, levels[i].front(), i, async);
+			levels[i].pop_front();
+			manager->update();
+			if(inProgress > maxJobs) {
+				std::cout << "flushing jobs..." << std::endl;
+				manager->flush();
+			}
+			updateProgressInternal(processed, todo);
+		}
+		manager->flush();
+	}
+
+	manager->clear();
+	LOG_STAT(TreeNodes, nodeCount);
+	LOG_STAT(Depth, maxLevel);
+	LOG_STAT(Processed, processed);
+	LOG_STAT(Skipped, nodeCount-processed);
+	LOG_STAT(ProcessTime, timer.getMilliseconds());
+	LOG_STAT(Complexity, countComplexity(root));
+}
+
+void Preprocessor::Implementation::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {
+	static Timer timer;
+	timer.reset();
+	stats->clear();
+
+	std::deque<Node*> todo;
+	todo.push_back(node);
+	while(node->hasParent()) {
+		node = node->getParent();
+		todo.push_back(node);
+	}
+	processed = 0;
+	uint32_t tmp = 0;
+	nodeCount = todo.size();
+	updateProgressInternal(processed, nodeCount);
+
+	while(!todo.empty()) {
+		Node* current = todo.front();
+		todo.pop_front();
+		//++processed;
+		if(current->findAttribute(SURFEL_ID)) {
+			coverage = current->findAttribute(SURFEL_REL_COVERING) ? current->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
+			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, current);
+			buildAndStoreSurfels(frameContext, textures, current, async);
+
+			if(abortUpdate(current, coverage)) {
+				tmp = nodeCount-processed;
+				todo.clear();
+			}
+			manager->update();
+		} else {
+			++tmp;
+		}
+		updateProgressInternal(processed+tmp, nodeCount);
+	}
+	//manager->clear();
+
+	LOG_STAT(TreeNodes, nodeCount);
+	LOG_STAT(Processed, processed);
+	LOG_STAT(Skipped, nodeCount-processed);
+	LOG_STAT(ProcessTime, timer.getMilliseconds());
+}
+
+void Preprocessor::Implementation::updateProgressInternal(uint32_t processed, uint32_t nodeCount) {
+	LOCK(*mutex);
+	updateProgress(processed, nodeCount);
+}
+
+Preprocessor::Implementation::SurfelTextures_t Preprocessor::Implementation::renderSurfelTexturesForNode(FrameContext& frameContext, Node* node) {
 
 	RenderingContext& rc = frameContext.getRenderingContext();
 	static Util::Timer timer;
@@ -279,7 +419,7 @@ Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameCo
 		float maxHeight = 0;
 		auto it = cameras.begin();
 		try {
-		for(auto dir : Preprocessor::directions) {
+		for(auto dir : Preprocessor::Implementation::directions) {
 			CameraNodeOrtho* camera = (*it).get();
 			updateEnclosingOrthoCam(camera, dir, node);
 			maxWidth = std::max(maxWidth, camera->getRightClippingPlane()-camera->getLeftClippingPlane());
@@ -373,42 +513,44 @@ Preprocessor::SurfelTextures_t Preprocessor::renderSurfelTexturesForNode(FrameCo
 	return textures;
 }
 
-void Preprocessor::buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async) {
+void Preprocessor::Implementation::buildAndStoreSurfels(FrameContext& frameContext, const SurfelTextures_t& textures, Node* node, bool async) {
 	if(textures.size() < 4)
 		return;
-	static Util::Timer timer;
 	RenderingContext& rc = frameContext.getRenderingContext();
 	Util::Reference<Util::PixelAccessor> pos = TextureUtils::createColorPixelAccessor(rc, textures[POSITION].get());
 	Util::Reference<Util::PixelAccessor> normal = TextureUtils::createColorPixelAccessor(rc, textures[NORMAL].get());
 	Util::Reference<Util::PixelAccessor> color = TextureUtils::createColorPixelAccessor(rc, textures[COLOR].get());
 	Util::Reference<Util::PixelAccessor> size = TextureUtils::createColorPixelAccessor(rc, textures[SIZE].get());
-	if(async) {
-		manager->executeAsync([=] () {
-			timer.reset();
-			std::cout << "building surfels... " << std::endl;
-			SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
-			std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-			std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, false);
-			manager->executeOnMainThread(storeSurfel);
-		});
-	} else {
+	std::function<void()> generateSurfels = [=] () {
+		static Util::Timer timer;
 		timer.reset();
 		std::cout << "building surfels... " << std::endl;
 		SurfelInfo_t surfels = surfelGenerator->createSurfels(*pos.get(), *normal.get(), *color.get(), *size.get());
-		std::cerr << std::flush;
 		std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
-		manager->storeSurfel(node, surfels, false);
+
+		++processed;
+		--inProgress;
+		std::function<void()> storeSurfel = std::bind(&SurfelManager::storeSurfel, manager.get(), node, surfels, false);
+		manager->executeOnMainThread(storeSurfel);
+	};
+
+	if(async) {
+		manager->executeAsync(generateSurfels);
+	} else {
+		generateSurfels();
 	}
 }
 
-void Preprocessor::visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async) {
-	if(node->findAttribute(NODE_HANDLED)) {
+void Preprocessor::Implementation::visitNode(FrameContext& frameContext, Node* node, uint32_t level, bool async) {
+
+	/*if(node->findAttribute(NODE_HANDLED)) {
 		++processed;
 		return;
-	}
+	}*/
 	Node* proto = node->isInstance() ? node->getPrototype() : node;
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(proto);
-	if(geometry != nullptr && geometry->getMesh()->getVertexCount()>0) {
+
+	/*if(geometry != nullptr && geometry->getMesh()->getVertexCount()>0) {
 		// externalize meshes
 		manager->storeMesh(geometry, false);
 		geometry->setFixedBB(geometry->getBB());
@@ -416,7 +558,18 @@ void Preprocessor::visitNode(FrameContext& frameContext, Node* node, uint32_t le
 		proto->setAttribute(MESH_COMPLEXITY, GenericAttribute::createNumber(mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount()));
 		geometry->setMesh(new Mesh);
 		dynamic_cast<GeometryNode*>(node)->setMesh(geometry->getMesh());
-	}
+	}*/
+
+	/*uint32_t complexity = countComplexity(node);
+	if(complexity < maxComplexity) {
+		updateProgressInternal(++processed, nodeCount);
+		++skipped;
+		//node->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
+		return;
+	}*/
+
+	generateId(node, level);
+
 	if(node->findAttribute(SURFELS)) {
 		ReferenceAttribute<Mesh>* attr = node->findAttribute(SURFELS)->toType<ReferenceAttribute<Mesh>>();
 		if(attr != nullptr) {
@@ -425,117 +578,16 @@ void Preprocessor::visitNode(FrameContext& frameContext, Node* node, uint32_t le
 			proto->unsetAttribute(SURFELS);
 			std::cout << "Attached Surfels found." << std::endl;
 		}
+		//updateProgressInternal(++processed, nodeCount);
+		++processed;
 	} else if(node->findAttribute(SURFEL_ID) && countComplexity(node) > maxComplexity) {
 		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 		buildAndStoreSurfels(frameContext, textures, node, async);
 	}
-	proto->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
-	updateProgress(++processed, nodeCount);
+	//proto->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
 }
 
-void Preprocessor::initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader) {
-	cameras.clear();
-
-	// Create cameras
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-	cameras.push_back(new CameraNodeOrtho());
-
-	this->mrtShader = mrtShader;
-	this->sizeShader = sizeShader;
-}
-
-using std::placeholders::_1;
-using std::placeholders::_2;
-void Preprocessor::process(FrameContext& frameContext, Node* root, bool async) {
-	{
-		auto nodes = collectNodes(root);
-		processed = 0;
-		nodeCount = nodes.size();
-		updateProgress(processed, nodeCount);
-	}
-	VisitNodeFn_t visit = std::bind(&Preprocessor::visitNode, this, std::ref(frameContext), _1, _2, async);
-	forEachNodeBottomUp(root, [this] (Node* node, uint32_t level) {
-		if(countComplexity(node) < maxComplexity) {
-			node->setAttribute(NODE_HANDLED, GenericAttribute::createBool(true));
-			return NodeVisitor::CONTINUE_TRAVERSAL;
-		}
-		return generateId(node, level);
-	}, visit);
-	forEachNodeTopDown(root, [] (Node* node) {
-		if(node->isInstance())
-			node = node->getPrototype();
-		node->unsetAttribute(NODE_COMPLEXITY);
-		node->unsetAttribute(NODE_HANDLED);
-	});
-	manager->clear();
-}
-
-void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) {
-	std::deque<Node*> todo;
-	todo.push_back(node);
-	while(node->hasParent()) {
-		node = node->getParent();
-		todo.push_back(node);
-	}
-	processed = 0;
-	nodeCount = todo.size();
-	updateProgress(processed, nodeCount);
-
-	while(!todo.empty()) {
-		Node* current = todo.front();
-		todo.pop_front();
-		++processed;
-		if(current->findAttribute(SURFEL_ID)) {
-			coverage *= current->findAttribute(SURFEL_REL_COVERING) ? current->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, current);
-			buildAndStoreSurfels(frameContext, textures, current, async);
-
-			if(abortUpdate(current, coverage)) {
-				processed = nodeCount;
-				todo.clear();
-			}
-		}
-		updateProgress(processed, nodeCount);
-	}
-	manager->clear();
-
-	//TODO: recalculate coverage
-	/*if(dynamic_cast<GeometryNode*>(node) != nullptr) {
-		SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-		buildAndStoreSurfels(frameContext, textures, node, async);
-		coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-	} else {
-		std::deque<Node*> children = getChildNodes(node);
-		std::deque<SurfelInfo_t> surfels;
-		for(auto child : children) {
-			while(manager->loadSurfel(child,9999,0,false) == SurfelManager::Pending) {
-				manager->update();
-			}
-			if(manager->loadSurfel(child,9999,0,false) == SurfelManager::Success) {
-				float relCov = child->isAttributeSet(SURFEL_REL_COVERING) ? child->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-				surfels.push_back({manager->getSurfel(child), relCov});
-			}
-		}
-		Mesh* mesh = combineSurfelMeshes(surfels, node->isAttributeSet(SURFEL_COUNT) ? node->findAttribute(SURFEL_COUNT)->toUnsignedInt() :10000);
-		//TODO: calculate coverage
-		coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-		if(mesh != nullptr) {
-			manager->storeSurfel(node, {mesh, coverage}, async);
-		} else {
-			SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
-			buildAndStoreSurfels(frameContext, textures, node, async);
-			coverage = node->isAttributeSet(SURFEL_REL_COVERING) ? node->findAttribute(SURFEL_REL_COVERING)->toFloat() : 0.5f;
-		}
-	}*/
-}
-
-Rendering::Mesh* Preprocessor::combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize) {
+Rendering::Mesh* Preprocessor::Implementation::combineSurfelMeshes(const std::deque<SurfelInfo_t>& meshes, uint32_t targetSize) {
 	if(meshes.empty())
 		return nullptr;
 
@@ -599,12 +651,7 @@ Rendering::Mesh* Preprocessor::combineSurfelMeshes(const std::deque<SurfelInfo_t
 	return mesh;
 }
 
-uint32_t Preprocessor::getMaxAbsSurfels()const			{	return surfelGenerator->getMaxAbsSurfels();	}
-float Preprocessor::getReusalRate()const				{	return surfelGenerator->getReusalRate();	}
-void Preprocessor::setMaxAbsSurfels(uint32_t i)			{	surfelGenerator->setMaxAbsSurfels(i);	}
-void Preprocessor::setReusalRate(float f)				{	surfelGenerator->setReusalRate(f);	}
-
-Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContext, Node* node) {
+Rendering::Mesh* Preprocessor::Implementation::generateMeshFromSurfels(FrameContext& frameContext, Node* node) {
 	SurfelTextures_t textures = renderSurfelTexturesForNode(frameContext, node);
 	if(textures.size() < 4)
 		return nullptr;
@@ -622,6 +669,96 @@ Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContex
 	std::cout << "done. Time: " << timer.getMilliseconds() << std::endl;
 	return nullptr;
 }
+
+/******************************************
+ * internal renderer implementation
+ ******************************************/
+
+NodeRendererResult Preprocessor::Implementation::InternalRenderer::displayNode(FrameContext & context, Node * node, const RenderParam & rp) {
+	processor->manager->update();
+	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node->isInstance() ? node->getPrototype() : node);
+	if(geometry) {
+		if(geometry->getMesh() && !geometry->getMesh()->empty()) {
+			return NodeRendererResult::PASS_ON;
+		} else if(node->findAttribute(MESH_ID)) {
+			SurfelManager::MeshLoadResult_t result;
+			// force mesh loading
+			Reference<Mesh> mesh;
+			if( processor->manager->fetchMesh(mesh,geometry,9999,0,false, true) == SurfelManager::Success) {
+				if(mesh.isNull()) {
+					return NodeRendererResult::PASS_ON;
+				}
+				Renderer::drawMesh(context, node, rp, mesh.get() );
+				return NodeRendererResult::PASS_ON;
+			}
+		}
+	}
+
+	// don't render root node
+	if(node == root || node->findAttribute(SURFEL_ID) == nullptr) {
+		return NodeRendererResult::PASS_ON;
+	}
+
+	uint32_t depth = 0;
+	Node* tmp = node;
+	while(tmp->hasParent() && tmp != root) {
+		++depth;
+		tmp = tmp->getParent();
+	}
+
+	NodeRendererResult renderResult = NodeRendererResult::PASS_ON;
+	if(depth >= MAX_DEPTH) {
+		renderResult = NodeRendererResult::NODE_HANDLED;
+	}
+
+	SurfelManager::MeshLoadResult_t result;
+	// force mesh loading
+	Reference<Mesh> mesh;
+	if( processor->manager->fetchSurfel(mesh,node,9999,0,false, true) == SurfelManager::Success) {
+		if(mesh.isNull()) {
+			return renderResult;
+		}
+		uint32_t count = mesh->isUsingIndexData() ? mesh->getIndexCount() : mesh->getVertexCount();
+		Renderer::drawSurfels(context, node, rp, mesh.get() , 4, count);
+		return renderResult;
+	}
+	return renderResult;
+}
+
+State::stateResult_t Preprocessor::Implementation::InternalRenderer::doEnableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	root = node;
+	return NodeRendererState::doEnableState(context,node,rp);
+}
+
+void Preprocessor::Implementation::InternalRenderer::doDisableState(FrameContext & context, Node * node, const RenderParam & rp) {
+	root = nullptr;
+	NodeRendererState::doDisableState(context,node,rp);
+}
+
+/******************************************
+ * Preprocessor
+ ******************************************/
+
+Preprocessor::Preprocessor(SurfelManager* manager) : impl(new Implementation(manager)) {}
+Preprocessor::~Preprocessor() {};
+
+void Preprocessor::initShaders(Rendering::Shader* mrtShader, Rendering::Shader* sizeShader) { impl->initShaders(mrtShader, sizeShader); }
+
+void Preprocessor::process(FrameContext& frameContext, Node* root, bool async, bool dryRun) { impl->process(frameContext, root, async, dryRun); }
+
+void Preprocessor::updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async) { impl->updateSurfels(frameContext, node, coverage, async); }
+
+void Preprocessor::setAbortUpdateFn(const std::function<bool(Node*,float)> & function) { impl->abortUpdate = function; }
+void Preprocessor::setUpdateProgressFn(const std::function<void(uint32_t,uint32_t)> & function) { impl->updateProgress = function; }
+uint32_t Preprocessor::getMaxAbsSurfels()const	{	return impl->surfelGenerator->getMaxAbsSurfels();	}
+float Preprocessor::getReusalRate()const		{	return impl->surfelGenerator->getReusalRate();	}
+void Preprocessor::setMaxAbsSurfels(uint32_t i)	{	impl->surfelGenerator->setMaxAbsSurfels(i);	}
+void Preprocessor::setReusalRate(float f)		{	impl->surfelGenerator->setReusalRate(f);	}
+void Preprocessor::setMaxComplexity(uint32_t value) { impl->maxComplexity = value; }
+void Preprocessor::setVerticalResolution(float f)		{	impl->verticalResolution = f;	}
+Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContext, Node* node) { return impl->generateMeshFromSurfels(frameContext, node); }
+
+Util::GenericAttributeMap * Preprocessor::getStats() const { return impl->stats.get(); }
 
 } /* namespace ThesisSascha */
 } /* namespace MinSG */

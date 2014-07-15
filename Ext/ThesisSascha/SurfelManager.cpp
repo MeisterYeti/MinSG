@@ -87,7 +87,7 @@ inline const StringIdentifier getStringId(Node* node, const StringIdentifier& id
 	StringIdentifier id;
 	if(!node->findAttribute(idName)) {
 		WARN("Node has no attribute: " + idName.toString());
-	} if(!node->findAttribute(strName)) {
+	} else if(!node->findAttribute(strName)) {
 		id = node->findAttribute(idName)->toString();
 		proto->setAttribute(strName, new StringIDAttribute_t(id));
 	} else {
@@ -104,7 +104,7 @@ inline const StringIdentifier getStringId(Node* node, const StringIdentifier& id
 inline const StringIdentifier assureStringId(Node* node, const StringIdentifier& idName, const StringIdentifier& strName) {
 	if(node->isInstance()) node = node->getPrototype(); // meshIds or surfelIds are only stored in prototypes
 	if(!node->isAttributeSet(idName))
-		node->setAttribute(SURFEL_ID, GenericAttribute::createString(StringUtils::createRandomString(32)));
+		node->setAttribute(idName, GenericAttribute::createString(StringUtils::createRandomString(32)));
 	return getStringId(node, idName, strName);
 }
 
@@ -286,7 +286,7 @@ public:
 
 	SurfelManager::MeshLoadResult_t doFetch(const StringIdentifier& id, const StringIdentifier& parentId, bool isSurfel, Util::Reference<Rendering::Mesh>& out, float projSize, float distance, bool async, bool force);
 	bool isCached(const StringIdentifier& id) const;
-	SurfelManager::MeshLoadResult_t doLoadMesh(CacheObject* object, bool async);
+	SurfelManager::MeshLoadResult_t doLoadMesh(CacheObject* object, bool async, bool force = false);
 	void doStoreMesh(const StringIdentifier& id, const FileName& filename, Mesh* mesh, bool async);
 
 	void executeAsync(std::function<void()> function) { jobQueue.push(function); };
@@ -295,6 +295,8 @@ public:
 	void release(CacheObject* obj);
 
 	void requestHandler();
+
+	bool isInFront(Node* node);
 public:
 	std::unique_ptr<Mutex> mutex;
 
@@ -326,7 +328,7 @@ SurfelManager::Implementation::Implementation(SurfelManager* m, const FileName& 
 void SurfelManager::Implementation::init() {
 	for(uint32_t i=0; i<THREAD_COUNT; ++i) {
 		threadPool.push_back(std::unique_ptr<WorkerThread>(new WorkerThread(manager.get())));
-		executeAsync([this](){requestHandler();});
+		//executeAsync([this](){requestHandler();});
 	}
 	for(uint_fast32_t i = 0; i < MAX_POOL_SIZE; ++i) {
 		CacheObject::cacheObjectPool.push_back(CacheObject::Ptr_t(new CacheObject(NO_PARENT)));
@@ -426,15 +428,25 @@ void SurfelManager::Implementation::clear() {
 }
 
 void SurfelManager::Implementation::flush() {
-	while(!mainThreadQueue.empty()) {
-		mainThreadQueue.pop()();
-	}
 
+	// flush pending requests
 	while(!requests.empty()) {
 		CacheObject* object = requests.tryPopFront();
 		if(doLoadMesh(object, false) == Failed)
 			release(object);
 	}
+	// flush other jobs in job queue
+	while(!jobQueue.empty()) {
+		Job_t job;
+		if(jobQueue.tryPop(job))
+			job();
+	}
+
+	// flush main thread queue
+	while(!mainThreadQueue.empty()) {
+		mainThreadQueue.pop()();
+	}
+
 }
 
 SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doFetch(const StringIdentifier& id, const StringIdentifier& parentId, bool isSurfel, Util::Reference<Rendering::Mesh>& out, float projSize, float distance, bool async, bool force) {
@@ -471,7 +483,7 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doFetch(const Str
 	} else if(force) {
 		object->state = CacheObject::Pending;
 		mutex->unlock();
-		if(doLoadMesh(object, false) == Failed) {
+		if(doLoadMesh(object, false, true) == Failed) {
 			mutex->lock();
 			WARN("Could not force load mesh " + id.toString());
 			++cacheMisses;
@@ -487,6 +499,8 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doFetch(const Str
 			mutex->unlock();
 			release(object);
 			mutex->lock();
+		} else {
+			executeAsync([this](){requestHandler();});
 		}
 	}
 	++cacheMisses;
@@ -503,9 +517,28 @@ bool SurfelManager::Implementation::isCached(const StringIdentifier& id) const {
 	return false;
 }
 
-SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheObject* object, bool async) {
-	if(!object || object->isFree() || currentMemorySize >= maxMemory) return Failed;
+SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheObject* object, bool async, bool force) {
+	if(!object || object->isFree() || (currentMemorySize >= maxMemory && !force)) return Failed;
 	if(!object->isPending()) return Pending;
+
+
+	if(force) {
+		async = false;
+		// make some room
+		while(currentMemorySize >= maxMemory) {
+			CacheObject* obj = cache.evict();
+			if(obj != nullptr) {
+				currentMemorySize -= obj->memory;
+				if(obj->parentId != NO_PARENT) {
+					auto pIt = idToCacheObject.find(obj->parentId);
+					if(pIt != idToCacheObject.end()) {
+						pIt->second->childCount--;
+					}
+				}
+				release(obj);
+			}
+		}
+	}
 
 	std::function<void()> readFn = [](){};
 	{
@@ -518,7 +551,7 @@ SurfelManager::MeshLoadResult_t SurfelManager::Implementation::doLoadMesh(CacheO
 			return Failed;
 		}*/
 
-		if(object->parentId != NO_PARENT) {
+		if(object->parentId != NO_PARENT && !force) {
 			auto pIt = idToCacheObject.find(object->parentId);
 			if(pIt != idToCacheObject.end()) {
 				pIt->second->childCount++;
@@ -620,10 +653,20 @@ void SurfelManager::Implementation::release(CacheObject* object) {
 }
 
 void SurfelManager::Implementation::requestHandler() {
-	CacheObject* object = requests.popFront();
+	CacheObject* object = requests.tryPopFront();
 	if(doLoadMesh(object, false) == Failed)
 		release(object);
-	executeAsync([this](){requestHandler();});
+	//executeAsync([this](){requestHandler();});
+}
+
+bool SurfelManager::Implementation::isInFront(Node* node) {
+	LOCK(*mutex);
+	const StringIdentifier id = node->findAttribute(SURFEL_ID) ? getStringId(node, SURFEL_ID, SURFEL_STRINGID) : getStringId(node, MESH_ID, MESH_STRINGID);
+	auto it = idToCacheObject.find(id);
+	if(it != idToCacheObject.end()) {
+		return it->second->isLoaded() && it->second->childCount == 0;
+	}
+	return false;
 }
 
 /******************************************
@@ -687,13 +730,18 @@ SurfelManager::MeshLoadResult_t SurfelManager::fetchMesh(Util::Reference<Renderi
 }
 
 bool SurfelManager::isCached(Node* node) {
-	if(node->isInstance()) node = node->getPrototype(); // mesheIds or surfelIds are only stored in prototypes
-	if(!node->isAttributeSet(SURFEL_ID) && !node->isAttributeSet(MESH_ID)) return true; // return true because there might be surfels in the subtree
+	//if(node->isInstance()) node = node->getPrototype(); // mesheIds or surfelIds are only stored in prototypes
+	if(!node->findAttribute(SURFEL_ID) && !node->findAttribute(MESH_ID)) return true; // return true because there might be surfels in the subtree
 	GeometryNode* geometry = dynamic_cast<GeometryNode*>(node);
 	if(geometry != nullptr && geometry->getMesh()->getVertexCount() > 0) return true;
-	if(node->isAttributeSet(MESH_ID) && impl->isCached(getStringId(node, MESH_ID, MESH_STRINGID))) return true;
-	if(node->isAttributeSet(SURFEL_ID) && impl->isCached(getStringId(node, SURFEL_ID, SURFEL_STRINGID))) return true;
+	if(node->findAttribute(MESH_ID) && impl->isCached(getStringId(node, MESH_ID, MESH_STRINGID))) return true;
+	if(node->findAttribute(SURFEL_ID) && impl->isCached(getStringId(node, SURFEL_ID, SURFEL_STRINGID))) return true;
 	return false;
+}
+
+bool SurfelManager::isInFront(Node* node) {
+	if(!node->findAttribute(SURFEL_ID) && !node->findAttribute(MESH_ID)) return false;
+	return impl->isInFront(node);
 }
 
 void SurfelManager::update() { impl->update(); }
