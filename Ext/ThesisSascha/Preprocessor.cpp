@@ -157,7 +157,7 @@ public:
 	void updateSurfels(FrameContext& frameContext, Node* node, float coverage, bool async);
 
 	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Node* node);
-
+	Rendering::Mesh* generateMeshFromSurfels(FrameContext& frameContext, Rendering::Mesh* surfelMesh, bool inplace);
 //private:
 	class InternalRenderer;
 
@@ -671,7 +671,7 @@ Rendering::Mesh* Preprocessor::Implementation::generateMeshFromSurfels(FrameCont
 	return generateMeshFromSurfels(frameContext, surfels.first.detachAndDecrease(), true);
 }
 
-Rendering::Mesh* Preprocessor::generateMeshFromSurfels(FrameContext& frameContext, Rendering::Mesh* surfelMesh, bool inplace) {
+Rendering::Mesh* Preprocessor::Implementation::generateMeshFromSurfels(FrameContext& frameContext, Rendering::Mesh* surfelMesh, bool inplace) {
 	Reference<Mesh> mesh = surfelMesh;
 	// Initialize triangulator
 	MinSG::GreedyProjectionTriangulation gp3;

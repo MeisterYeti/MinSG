@@ -115,7 +115,7 @@ Renderer::Implementation::Implementation(Renderer* renderer, SurfelManager* mana
 
 bool Renderer::Implementation::isValidFront(Node* node) {
 	GeometryNode* g = dynamic_cast<GeometryNode*>(node);
-	return (g != nullptr && !g->getMesh()->empty())
+	return (g != nullptr && g->getMesh() && !g->getMesh()->empty())
 			|| node->findAttribute(SURFEL_ID) != nullptr
 			|| node->findAttribute(MESH_ID) != nullptr;
 }
@@ -125,9 +125,10 @@ FetchResult Renderer::Implementation::fetch(FrameContext& context, Node* node, c
 	float farPlane = context.getCamera()->getFarPlane();
 	float invDistance = farPlane-std::min(distance, farPlane);
 
-	bool cull = includeDistance ? qSize*invDistance < minProjSize*farPlane : qSize < minProjSize ;
+	bool cull = includeDistance ? qSize*invDistance < minProjSize*farPlane : qSize < minProjSize;
 	if(node == root.get() || node->getParent() == root.get())
 		cull = false;
+
 	if (!cull && rp.getFlag(FRUSTUM_CULLING)) {
 		// TODO: autmatically cull child nodes in front?
 		int t = context.getCamera()->testBoxFrustumIntersection(node->getWorldBB());
@@ -149,7 +150,7 @@ FetchResult Renderer::Implementation::fetch(FrameContext& context, Node* node, c
 				return {FetchResult::Failed, node, nullptr};
 			}
 			return {FetchResult::RenderMesh, node, mesh};
-		} else if(!geometry->getMesh()->empty()) {
+		} else if(geometry->getMesh() && !geometry->getMesh()->empty()) {
 			return {FetchResult::RenderMesh, node, geometry->getMesh()};
 		}
 	}
@@ -167,7 +168,11 @@ FetchResult Renderer::Implementation::fetch(FrameContext& context, Node* node, c
 	return {FetchResult::Failed, node, nullptr};
 }
 bool Renderer::Implementation::display(FrameContext& context, const RenderParam& rp, const FetchResult& result, float projSize, float distance) {
+	//if(!manager->isInFront(result.node.get()))
+	//	return false;
+
 	float farPlane = context.getCamera()->getFarPlane();
+
 	if(result.type == FetchResult::RenderMesh) {
 		Renderer::drawMesh(context, result.node.get(), rp, result.mesh.get());
 		return true;
